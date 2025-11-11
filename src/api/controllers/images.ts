@@ -10,6 +10,7 @@ import { DEFAULT_ASSISTANT_ID_CN, DEFAULT_ASSISTANT_ID_US, DEFAULT_ASSISTANT_ID_
 import { WEB_VERSION as DREAMINA_WEB_VERSION, DA_VERSION as DREAMINA_DA_VERSION, AIGC_FEATURES as DREAMINA_AIGC_FEATURES } from "@/api/consts/dreamina.ts";
 import { uploadImageFromUrl, uploadImageBuffer } from "@/lib/image-uploader.ts";
 import { extractImageUrls } from "@/lib/image-utils.ts";
+import { base64ToBuffer } from "@/lib/message-parser.ts";
 
 export const DEFAULT_MODEL = DEFAULT_IMAGE_MODEL;
 
@@ -96,8 +97,17 @@ export async function generateImageComposition(
       const image = images[i];
       let imageId: string;
       if (typeof image === 'string') {
-        logger.info(`正在处理第 ${i + 1}/${imageCount} 张图片 (URL)...`);
-        imageId = await uploadImageFromUrl(image, refreshToken, regionInfo);
+        const trimmed = image.trim();
+        const normalizedBase64 = trimmed.replace(/\s+/g, "");
+
+        if (util.isBASE64Data(trimmed) || (normalizedBase64 && util.isBASE64(normalizedBase64))) {
+          logger.info(`正在处理第 ${i + 1}/${imageCount} 张图片 (Base64)...`);
+          const buffer = util.isBASE64Data(trimmed) ? base64ToBuffer(trimmed) : base64ToBuffer(normalizedBase64);
+          imageId = await uploadImageBuffer(buffer, refreshToken, regionInfo);
+        } else {
+          logger.info(`正在处理第 ${i + 1}/${imageCount} 张图片 (URL)...`);
+          imageId = await uploadImageFromUrl(trimmed, refreshToken, regionInfo);
+        }
       } else {
         logger.info(`正在处理第 ${i + 1}/${imageCount} 张图片 (Buffer)...`);
         imageId = await uploadImageBuffer(image, refreshToken, regionInfo);

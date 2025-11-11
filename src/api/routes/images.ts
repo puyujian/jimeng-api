@@ -5,6 +5,48 @@ import Request from "@/lib/request/Request.ts";
 import { generateImages, generateImageComposition } from "@/api/controllers/images.ts";
 import { tokenSplit } from "@/api/controllers/core.ts";
 import util from "@/lib/util.ts";
+import { base64ToBuffer } from "@/lib/message-parser.ts";
+
+function normalizeImageInput(image: any): string | Buffer {
+  if (_.isString(image)) {
+    const trimmed = image.trim();
+    const normalizedBase64 = trimmed.replace(/\s+/g, "");
+
+    if (util.isBASE64Data(trimmed)) {
+      return base64ToBuffer(trimmed);
+    }
+
+    if (normalizedBase64 && util.isBASE64(normalizedBase64)) {
+      return base64ToBuffer(normalizedBase64);
+    }
+
+    return trimmed;
+  }
+
+  if (_.isObject(image)) {
+    if (_.isString(image.b64_json)) {
+      return base64ToBuffer(image.b64_json);
+    }
+
+    if (_.isString(image.base64)) {
+      return base64ToBuffer(image.base64);
+    }
+
+    if (_.isString(image.image_base64)) {
+      return base64ToBuffer(image.image_base64);
+    }
+
+    if (_.isString(image.image_bytes)) {
+      return base64ToBuffer(image.image_bytes);
+    }
+
+    if (_.isString(image.url)) {
+      return normalizeImageInput(image.url);
+    }
+  }
+
+  return image;
+}
 
 export default {
   prefix: "/v1/images",
@@ -123,13 +165,13 @@ export default {
         }
         bodyImages.forEach((image: any, index: number) => {
           if (!_.isString(image) && !_.isObject(image)) {
-            throw new Error(`图片 ${index + 1} 格式不正确：应为URL字符串或包含url字段的对象`);
+            throw new Error(`图片 ${index + 1} 格式不正确：应为URL字符串、base64字符串或包含url/b64_json/base64/image_base64字段的对象`);
           }
-          if (_.isObject(image) && !image.url) {
-            throw new Error(`图片 ${index + 1} 缺少url字段`);
+          if (_.isObject(image) && !image.url && !image.b64_json && !image.base64 && !image.image_base64 && !image.image_bytes) {
+            throw new Error(`图片 ${index + 1} 缺少url/b64_json/base64/image_base64/image_bytes字段`);
           }
         });
-        images = bodyImages.map((image: any) => _.isString(image) ? image : image.url);
+        images = bodyImages.map((image: any) => normalizeImageInput(image));
       }
 
       const tokens = tokenSplit(request.headers.authorization);
