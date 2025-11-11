@@ -61,6 +61,10 @@ export class JimengErrorHandler {
       case '5002':
         throw new APIException(EX.API_VIDEO_GENERATION_FAILED, `[视频生成失败]: ${errmsg}`);
       
+      case '1002':
+        throw new APIException(EX.API_REQUEST_FAILED, 
+          `[${operation}失败]: ${errmsg} (错误码: ${ret})。请检查请求参数是否正确，例如: 提示词格式、图片上传状态、模型选择等。`);
+      
       default:
         throw new APIException(EX.API_REQUEST_FAILED, `[${operation}失败]: ${errmsg} (错误码: ${ret})`);
     }
