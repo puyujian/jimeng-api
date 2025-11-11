@@ -1,4 +1,8 @@
 import _ from "lodash";
+import fs from "fs-extra";
+import os from "os";
+import path from "path";
+import { fileURLToPath } from "url";
 
 import APIException from "@/lib/exceptions/APIException.ts";
 import EX from "@/api/consts/exceptions.ts";
@@ -12,6 +16,71 @@ import { uploadImageFromUrl, uploadImageBuffer } from "@/lib/image-uploader.ts";
 import { extractImageUrls } from "@/lib/image-utils.ts";
 
 export const DEFAULT_MODEL = DEFAULT_IMAGE_MODEL;
+
+function isLocalFilePath(pathStr: string): boolean {
+  if (!pathStr || typeof pathStr !== 'string') return false;
+  return pathStr.startsWith('file://') || 
+         pathStr.startsWith('/') || 
+         /^[a-zA-Z]:\\/.test(pathStr) ||
+         pathStr.startsWith('~');
+}
+
+type ImageInput = string | Buffer | ArrayBuffer | Uint8Array;
+
+async function processImageInput(image: ImageInput, refreshToken: string, regionInfo: RegionInfo): Promise<string> {
+  if (Buffer.isBuffer(image)) {
+    logger.info('处理图片 (Buffer)...');
+    return await uploadImageBuffer(image, refreshToken, regionInfo);
+  }
+
+  if (image instanceof ArrayBuffer) {
+    logger.info('处理图片 (ArrayBuffer)...');
+    return await uploadImageBuffer(Buffer.from(image), refreshToken, regionInfo);
+  }
+
+  if (ArrayBuffer.isView(image)) {
+    logger.info('处理图片 (TypedArray)...');
+    const buffer = Buffer.from(image.buffer, image.byteOffset, image.byteLength);
+    return await uploadImageBuffer(buffer, refreshToken, regionInfo);
+  }
+  
+  if (typeof image === 'string' && isLocalFilePath(image)) {
+    let filePath: string;
+    
+    if (image.startsWith('file://')) {
+      try {
+        filePath = fileURLToPath(image);
+      } catch (e) {
+        filePath = image.substring(7);
+      }
+    } else if (image.startsWith('~')) {
+      filePath = path.join(os.homedir(), image.substring(1));
+    } else {
+      filePath = image;
+    }
+
+    if (!path.isAbsolute(filePath)) {
+      filePath = path.resolve(filePath);
+    }
+    
+    logger.info(`检测到本地文件路径，正在读取: ${filePath}`);
+    
+    if (!await fs.pathExists(filePath)) {
+      throw new Error(`本地文件不存在: ${filePath}`);
+    }
+    
+    const imageBuffer = await fs.readFile(filePath);
+    logger.info(`本地文件读取成功，大小: ${imageBuffer.length} 字节`);
+    return await uploadImageBuffer(imageBuffer, refreshToken, regionInfo);
+  }
+  
+  if (typeof image === 'string') {
+    logger.info(`处理图片 (URL): ${image}`);
+    return await uploadImageFromUrl(image, refreshToken, regionInfo);
+  }
+
+  throw new Error("不支持的图片输入类型");
+}
 
 function getResolutionParams(resolution: string = '2k', ratio: string = '1:1'): { width: number; height: number; image_ratio: number; resolution_type: string } {
   const resolutionGroup = RESOLUTION_OPTIONS[resolution];
@@ -45,7 +114,7 @@ export function getModel(model: string, isInternational: boolean) {
 export async function generateImageComposition(
   _model: string,
   prompt: string,
-  images: (string | Buffer)[],
+  images: ImageInput[],
   {
     ratio = '1:1',
     resolution = '2k',
@@ -94,14 +163,8 @@ export async function generateImageComposition(
   for (let i = 0; i < images.length; i++) {
     try {
       const image = images[i];
-      let imageId: string;
-      if (typeof image === 'string') {
-        logger.info(`正在处理第 ${i + 1}/${imageCount} 张图片 (URL)...`);
-        imageId = await uploadImageFromUrl(image, refreshToken, regionInfo);
-      } else {
-        logger.info(`正在处理第 ${i + 1}/${imageCount} 张图片 (Buffer)...`);
-        imageId = await uploadImageBuffer(image, refreshToken, regionInfo);
-      }
+      logger.info(`正在处理第 ${i + 1}/${imageCount} 张图片...`);
+      const imageId = await processImageInput(image, refreshToken, regionInfo);
       uploadedImageIds.push(imageId);
       logger.info(`图片 ${i + 1}/${imageCount} 上传成功: ${imageId}`);
     } catch (error) {
