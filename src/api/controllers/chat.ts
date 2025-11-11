@@ -12,6 +12,40 @@ import { RETRY_CONFIG } from "@/api/consts/common.ts";
 import { parseMessages, detectRequestType, base64ToBuffer } from "@/lib/message-parser.ts";
 
 /**
+ * 规范化提示词内容，确保传递给即梦接口的是纯文本
+ */
+function normalizePrompt(input: unknown): string {
+  if (_.isString(input)) return input;
+
+  if (Array.isArray(input)) {
+    return input
+      .map((item) => normalizePrompt(item))
+      .filter((segment) => segment.length > 0)
+      .join("\n");
+  }
+
+  if (_.isPlainObject(input)) {
+    const candidateFields = ["text", "content", "value", "message", "prompt"];
+    for (const field of candidateFields) {
+      const value = _.get(input, field);
+      if (value === input) continue;
+      if (_.isString(value) && value.trim().length > 0) {
+        return value;
+      }
+      if (!_.isNil(value)) {
+        const normalized = normalizePrompt(value);
+        if (normalized.trim().length > 0) {
+          return normalized;
+        }
+      }
+    }
+  }
+
+  if (input == null) return "";
+  return String(input);
+}
+
+/**
  * 解析模型
  *
  * @param model 模型名称
@@ -63,16 +97,22 @@ export async function createCompletion(
     const targetMessages = userMessages.length > 0 ? [userMessages[userMessages.length - 1]] : [messages[messages.length - 1]];
     const { text: parsedPrompt, images, hasImages } = parseMessages(targetMessages);
     const fallbackPrompt = parseMessages([messages[messages.length - 1]]).text;
-    const finalPrompt = parsedPrompt || fallbackPrompt || "";
-    const requestType = detectRequestType(_model, hasImages);
+    const finalPromptRaw = parsedPrompt || fallbackPrompt || "";
+    const finalPrompt = normalizePrompt(finalPromptRaw);
+
+    let requestType = detectRequestType(_model, hasImages);
+    if (!hasImages && images.length > 0) {
+      logger.warn("智能路由检测到图片但 hasImages=false，修正为 image-to-image");
+      requestType = "image-to-image";
+    }
 
     logger.info(`智能路由请求类型: ${requestType}, 提示词长度: ${finalPrompt.length}, 图片数量: ${images.length}`);
 
-    if (requestType === 'text-to-video' || requestType === 'image-to-video') {
+    if (requestType === "text-to-video" || requestType === "image-to-video") {
       try {
-        const imageUrls = images.filter(img => img.type === 'url').map(img => img.url!);
-        const base64Images = images.filter(img => img.type === 'base64');
-        
+        const imageUrls = images.filter(img => img.type === "url").map(img => img.url!);
+        const base64Images = images.filter(img => img.type === "base64");
+
         const videoOptions: any = {
           ratio: options.ratio || "1:1",
           resolution: options.resolution || "720p",
@@ -141,12 +181,12 @@ export async function createCompletion(
       }
     }
 
-    if (requestType === 'image-to-image') {
+    if (requestType === "image-to-image") {
       logger.info(`开始图生图，模型: ${_model}, 图片数量: ${images.length}`);
       const { model, width, height } = parseModel(_model);
       
       const imageInputs = images.map(img => 
-        img.type === 'base64' ? base64ToBuffer(img.base64!) : img.url!
+        img.type === "base64" ? base64ToBuffer(img.base64!) : img.url!
       );
       
       const resultUrls = await generateImageComposition(
@@ -264,14 +304,20 @@ export async function createCompletionStream(
     const targetMessages = userMessages.length > 0 ? [userMessages[userMessages.length - 1]] : [messages[messages.length - 1]];
     const { text: parsedPrompt, images, hasImages } = parseMessages(targetMessages);
     const fallbackPrompt = parseMessages([messages[messages.length - 1]]).text;
-    const finalPrompt = parsedPrompt || fallbackPrompt || "";
-    const requestType = detectRequestType(_model, hasImages);
+    const finalPromptRaw = parsedPrompt || fallbackPrompt || "";
+    const finalPrompt = normalizePrompt(finalPromptRaw);
+
+    let requestType = detectRequestType(_model, hasImages);
+    if (!hasImages && images.length > 0) {
+      logger.warn("[Stream] 智能路由检测到图片但 hasImages=false，修正为 image-to-image");
+      requestType = "image-to-image";
+    }
 
     logger.info(`[Stream] 智能路由请求类型: ${requestType}, 提示词长度: ${finalPrompt.length}, 图片数量: ${images.length}`);
 
-    if (requestType === 'text-to-video' || requestType === 'image-to-video') {
-      const imageUrls = images.filter(img => img.type === 'url').map(img => img.url!);
-      const base64Images = images.filter(img => img.type === 'base64');
+    if (requestType === "text-to-video" || requestType === "image-to-video") {
+      const imageUrls = images.filter(img => img.type === "url").map(img => img.url!);
+      const base64Images = images.filter(img => img.type === "base64");
       const videoOptions: any = {
         ratio: options.ratio || "1:1",
         resolution: options.resolution || "720p",
@@ -499,7 +545,7 @@ export async function createCompletionStream(
             logger.debug('视频生成失败，但流已关闭，跳过错误信息写入');
           }
         });
-    } else if (requestType === 'image-to-image') {
+    } else if (requestType === "image-to-image") {
       logger.info(`[Stream] 开始图生图，模型: ${_model}, 图片数量: ${images.length}`);
       const { model, width, height } = parseModel(_model);
       stream.write(
@@ -520,7 +566,7 @@ export async function createCompletionStream(
       );
 
       const imageInputs = images.map(img => 
-        img.type === 'base64' ? base64ToBuffer(img.base64!) : img.url!
+        img.type === "base64" ? base64ToBuffer(img.base64!) : img.url!
       );
 
       generateImageComposition(
