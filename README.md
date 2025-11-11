@@ -321,7 +321,23 @@ A:
 A: Common formats like JPG, PNG, WebP, GIF are supported. JPG or PNG are recommended.
 
 **Q: Can I use local images?**
-A: Yes. Direct upload of local files is now supported. Please refer to the "Local file upload example" above. You can also continue to use the network image URL method.
+A: Yes. Three methods are now supported:
+1. **Direct local file upload** (multipart/form-data): Use `-F "images=@/path/to/file.jpg"` to upload
+2. **Local file path** (application/json): Provide local file paths in the images array, such as `"/path/to/image.jpg"`, `"file:///path/to/image.jpg"`, or `"~/Pictures/image.jpg"`
+3. **Network image URL**: Provide HTTP/HTTPS image addresses
+
+Example (using local path with JSON):
+```bash
+curl -X POST http://localhost:5100/v1/images/compositions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_SESSION_ID" \
+  -d '{
+    "model": "jimeng-4.0",
+    "prompt": "Convert this photo into an oil painting style",
+    "images": ["/home/user/Pictures/photo.jpg"],
+    "resolution": "2k"
+  }'
+```
 
 ### Video Generation
 

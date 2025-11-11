@@ -336,7 +336,23 @@ A:
 A: 支持 JPG、PNG、WebP、GIF 等常见格式，推荐使用 JPG 或 PNG。
 
 **Q: 可以使用本地图片吗？**
-A: 可以。现在支持直接上传本地文件。请参考上方的“本地文件上传示例”。您也可以继续使用原有的网络图片URL方式。
+A: 可以。现在支持三种方式：
+1. **直接上传本地文件**（multipart/form-data）：使用 `-F "images=@/path/to/file.jpg"` 上传
+2. **本地文件路径**（application/json）：在 images 数组中提供本地文件路径，如 `"/path/to/image.jpg"`、`"file:///path/to/image.jpg"` 或 `"~/Pictures/image.jpg"`
+3. **网络图片 URL**：提供 HTTP/HTTPS 的图片地址
+
+示例（使用本地路径的 JSON 方式）:
+```bash
+curl -X POST http://localhost:5100/v1/images/compositions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_SESSION_ID" \
+  -d '{
+    "model": "jimeng-4.0",
+    "prompt": "将这张照片转换为油画风格",
+    "images": ["/home/user/Pictures/photo.jpg"],
+    "resolution": "2k"
+  }'
+```
 
 ### 视频生成
 
