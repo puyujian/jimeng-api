@@ -74,14 +74,19 @@ function parseMessageContent(content: any): { text: string; images: MessageImage
       } else if ((part.type === 'image_url' || part.type === 'input_image') && part.image_url) {
         const imageUrl = _.isString(part.image_url) ? part.image_url : part.image_url.url;
         addImage(images, imageUrl);
+        logger.info(`检测到图片URL: ${imageUrl?.substring(0, 50)}...`);
       } else if (part.type === 'image' && part.url) {
         addImage(images, part.url);
+        logger.info(`检测到图片URL (image): ${part.url?.substring(0, 50)}...`);
       } else if (part.type === 'input_image' && part.image_base64) {
         addImage(images, part.image_base64);
+        logger.info(`检测到Base64图片: ${part.image_base64?.substring(0, 50)}...`);
       } else if (part.type === 'input_image' && part.image_bytes) {
         addImage(images, part.image_bytes);
+        logger.info(`检测到图片字节数据: ${part.image_bytes?.substring(0, 50)}...`);
       } else if (part.type === 'image_url' && part.b64_json) {
         addImage(images, part.b64_json);
+        logger.info(`检测到Base64 JSON图片: ${part.b64_json?.substring(0, 50)}...`);
       }
     }
   } else if (_.isObject(content)) {
@@ -91,14 +96,19 @@ function parseMessageContent(content: any): { text: string; images: MessageImage
     } else if ((content.type === 'image_url' || content.type === 'input_image') && content.image_url) {
       const imageUrl = _.isString(content.image_url) ? content.image_url : content.image_url.url;
       addImage(images, imageUrl);
+      logger.info(`检测到图片URL (对象): ${imageUrl?.substring(0, 50)}...`);
     } else if ((content.type === 'input_image' || content.type === 'image') && content.image_base64) {
       addImage(images, content.image_base64);
+      logger.info(`检测到Base64图片 (对象): ${content.image_base64?.substring(0, 50)}...`);
     } else if ((content.type === 'input_image' || content.type === 'image') && content.image_bytes) {
       addImage(images, content.image_bytes);
+      logger.info(`检测到图片字节数据 (对象): ${content.image_bytes?.substring(0, 50)}...`);
     } else if ((content.type === 'image_url' || content.type === 'image') && content.url) {
       addImage(images, content.url);
+      logger.info(`检测到图片URL (url字段): ${content.url?.substring(0, 50)}...`);
     } else if (content.b64_json) {
       addImage(images, content.b64_json);
+      logger.info(`检测到Base64 JSON图片 (对象): ${content.b64_json?.substring(0, 50)}...`);
     }
   }
 

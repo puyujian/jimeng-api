@@ -67,6 +67,13 @@ export async function createCompletion(
     const requestType = detectRequestType(_model, hasImages);
 
     logger.info(`智能路由请求类型: ${requestType}, 提示词长度: ${finalPrompt.length}, 图片数量: ${images.length}`);
+    logger.info(`解析结果 - 提示词类型: ${typeof finalPrompt}, 是否有图片: ${hasImages}, 图片详情: ${JSON.stringify(images.map(img => ({ type: img.type, hasData: img.type === 'base64' ? img.base64!.substring(0, 30) + '...' : img.url })))}`);
+    
+    // 确保提示词是字符串类型
+    if (typeof finalPrompt !== 'string') {
+      logger.error(`提示词类型异常: ${typeof finalPrompt}, 值: ${JSON.stringify(finalPrompt)}`);
+      throw new APIException(EX.API_REQUEST_PARAMS_INVALID, "提示词格式不正确，请确保使用纯文本提示词");
+    }
 
     if (requestType === 'text-to-video' || requestType === 'image-to-video') {
       try {

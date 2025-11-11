@@ -294,7 +294,18 @@ export async function request(
 
   logger.info(`发送请求: ${method.toUpperCase()} ${fullUrl}`);
   logger.info(`请求参数: ${JSON.stringify(requestParams)}`);
-  logger.info(`请求数据: ${JSON.stringify(options.data || {})}`);
+  
+  // 记录请求数据，但限制长度
+  const dataStr = JSON.stringify(options.data || {});
+  if (dataStr.length > 1000) {
+    logger.info(`请求数据(截断前1000字符): ${dataStr.substring(0, 1000)}...`);
+    // 特别检查draft_content中是否包含base64或data:image/等内容
+    if (dataStr.includes('data:image/') || dataStr.includes('base64')) {
+      logger.warn(`请求数据中检测到base64图片数据！这可能导致请求失败。请确保图片已上传并使用image_uri引用。`);
+    }
+  } else {
+    logger.info(`请求数据: ${dataStr}`);
+  }
 
   // 添加重试逻辑
   let retries = 0;

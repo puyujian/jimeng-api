@@ -10,6 +10,7 @@ import { DEFAULT_ASSISTANT_ID_CN, DEFAULT_ASSISTANT_ID_US, DEFAULT_ASSISTANT_ID_
 import { WEB_VERSION as DREAMINA_WEB_VERSION, DA_VERSION as DREAMINA_DA_VERSION, AIGC_FEATURES as DREAMINA_AIGC_FEATURES } from "@/api/consts/dreamina.ts";
 import { uploadImageFromUrl, uploadImageBuffer } from "@/lib/image-uploader.ts";
 import { extractImageUrls } from "@/lib/image-utils.ts";
+import { base64ToBuffer } from "@/lib/message-parser.ts";
 
 export const DEFAULT_MODEL = DEFAULT_IMAGE_MODEL;
 
@@ -82,6 +83,15 @@ export async function generateImageComposition(
   const imageCount = images.length;
   logger.info(`使用模型: ${_model} 映射模型: ${model} 图生图功能 ${imageCount}张图片 ${width}x${height} 精细度: ${sampleStrength}`);
 
+  // 验证图片数量
+  if (imageCount === 0) {
+    throw new APIException(EX.API_REQUEST_PARAMS_INVALID, "图生图功能至少需要提供一张图片");
+  }
+  if (imageCount > 4) {
+    logger.warn(`图片数量过多 (${imageCount}张)，仅使用前4张`);
+    images = images.slice(0, 4);
+  }
+
   try {
     const { totalCredit } = await getCredit(refreshToken);
     if (totalCredit <= 0)
@@ -96,8 +106,16 @@ export async function generateImageComposition(
       const image = images[i];
       let imageId: string;
       if (typeof image === 'string') {
-        logger.info(`正在处理第 ${i + 1}/${imageCount} 张图片 (URL)...`);
-        imageId = await uploadImageFromUrl(image, refreshToken, regionInfo);
+        logger.info(`正在处理第 ${i + 1}/${imageCount} 张图片 (URL/Base64)...`);
+        // 如果是data URL，先转换为Buffer再上传
+        if (image.startsWith('data:image/')) {
+          logger.info(`检测到Base64图片，转换为Buffer后上传`);
+          const buffer = base64ToBuffer(image);
+          imageId = await uploadImageBuffer(buffer, refreshToken, regionInfo);
+        } else {
+          logger.info(`检测到URL图片，直接上传`);
+          imageId = await uploadImageFromUrl(image, refreshToken, regionInfo);
+        }
       } else {
         logger.info(`正在处理第 ${i + 1}/${imageCount} 张图片 (Buffer)...`);
         imageId = await uploadImageBuffer(image, refreshToken, regionInfo);
@@ -338,6 +356,13 @@ async function generateImagesInternal(
 ) {
   const regionInfo = parseRegionFromToken(refreshToken);
   const model = getModel(_model, regionInfo.isInternational);
+  
+  // 验证提示词参数类型，防止传入非字符串值
+  if (typeof prompt !== 'string') {
+    logger.error(`提示词类型错误: 期望字符串，但收到 ${typeof prompt}, 值: ${JSON.stringify(prompt)}`);
+    throw new APIException(EX.API_REQUEST_PARAMS_INVALID, 
+      `提示词必须是字符串类型。如果您的请求包含图片，请确保图片已被正确解析。当前收到的类型: ${typeof prompt}`);
+  }
   
   let width, height, image_ratio, resolution_type;
 
