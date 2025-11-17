@@ -30,11 +30,29 @@ async function uploadImageFromFile(file: any, refreshToken: string, regionInfo: 
   }
 }
 
-// 处理来自URL的图片
+// 处理来自URL的图片，也支持base64数据
 async function uploadImageFromUrl(imageUrl: string, refreshToken: string, regionInfo: RegionInfo): Promise<string> {
   try {
-    logger.info(`开始从URL下载并上传视频图片: ${imageUrl}`);
-    const imageResponse = await fetch(imageUrl);
+    const preview = imageUrl.substring(0, 100);
+    logger.info(`开始从URL下载并上传视频图片: ${preview}${imageUrl.length > 100 ? '...' : ''}`);
+
+    const trimmed = imageUrl.trim();
+    const normalizedBase64 = trimmed.replace(/\s+/g, "");
+    
+    // Check if it's a base64 data URI
+    if (util.isBASE64Data(trimmed)) {
+      logger.info(`检测到base64数据URI，直接转换为Buffer`);
+      const imageBuffer = Buffer.from(util.removeBASE64DataHeader(trimmed), 'base64');
+      return await uploadImageBuffer(imageBuffer, refreshToken, regionInfo);
+    }
+
+    if (normalizedBase64 && util.isBASE64(normalizedBase64)) {
+      logger.info(`检测到base64字符串，直接转换为Buffer`);
+      const imageBuffer = Buffer.from(normalizedBase64, 'base64');
+      return await uploadImageBuffer(imageBuffer, refreshToken, regionInfo);
+    }
+    
+    const imageResponse = await fetch(trimmed);
     if (!imageResponse.ok) {
       throw new Error(`下载图片失败: ${imageResponse.status}`);
     }

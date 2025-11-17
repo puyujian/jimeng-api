@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { Buffer } from "buffer";
 import { RegionInfo, request } from "@/api/controllers/core.ts";
 import { RegionUtils } from "@/lib/region-utils.ts";
 import { createSignature } from "@/lib/aws-signature.ts";
@@ -234,7 +235,8 @@ export async function uploadImageBuffer(
 
 /**
  * 从URL下载并上传图片
- * @param imageUrl 图片URL
+ * 也支持base64格式的图片数据
+ * @param imageUrl 图片URL或base64数据
  * @param refreshToken 刷新令牌
  * @param regionInfo 区域信息
  * @returns 图片URI
@@ -245,9 +247,26 @@ export async function uploadImageFromUrl(
   regionInfo: RegionInfo
 ): Promise<string> {
   try {
-    logger.info(`开始从URL下载并上传图片: ${imageUrl}`);
+    const preview = imageUrl.substring(0, 100);
+    logger.info(`开始从URL下载并上传图片: ${preview}${imageUrl.length > 100 ? '...' : ''}`);
 
-    const imageResponse = await fetch(imageUrl);
+    const trimmed = imageUrl.trim();
+    const normalizedBase64 = trimmed.replace(/\s+/g, "");
+
+    // Check if it's a base64 data URI
+    if (util.isBASE64Data(trimmed)) {
+      logger.info(`检测到base64数据URI，直接转换为Buffer`);
+      const imageBuffer = Buffer.from(util.removeBASE64DataHeader(trimmed), 'base64');
+      return await uploadImageBuffer(imageBuffer, refreshToken, regionInfo);
+    }
+
+    if (normalizedBase64 && util.isBASE64(normalizedBase64)) {
+      logger.info(`检测到base64字符串，直接转换为Buffer`);
+      const imageBuffer = Buffer.from(normalizedBase64, 'base64');
+      return await uploadImageBuffer(imageBuffer, refreshToken, regionInfo);
+    }
+
+    const imageResponse = await fetch(trimmed);
     if (!imageResponse.ok) {
       throw new Error(`下载图片失败: ${imageResponse.status}`);
     }
