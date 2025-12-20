@@ -511,18 +511,60 @@ curl -X POST http://localhost:5100/v1/chat/completions \
   }'
 ```
 
-**模型识别机制**:
-- 系统自动根据 `model` 参数判断生成类型
-- 以 `jimeng-video` 开头的模型 → 视频生成
-- 其他模型 → 图像生成
-- 自定义尺寸格式 `model:width×height` 会自动解析并应用
+### Token API
 
-**使用说明**:
-- 该接口完全兼容OpenAI Chat Completions API格式
-- 可以与支持OpenAI格式的客户端和工具直接集成
-- 仅使用 `messages` 数组中最后一条消息的内容作为提示词
-- 流式响应适合需要实时反馈的场景(如聊天界面)
-- 视频生成可能需要1-15分钟,建议启用流式响应以获取进度更新
+#### 检查Token状态
+
+**POST** `/token/check`
+
+检查token是否有效。
+
+**请求参数**:
+- `token` (string): 要检查的session token
+
+#### 获取积分信息
+
+**POST** `/token/points`
+
+获取一个或多个token的当前积分余额。
+
+**请求头**:
+- `Authorization`: Bearer token，多个token用逗号分隔
+
+#### 领取每日积分
+
+**POST** `/token/receive`
+
+手动触发每日积分领取（签到）。无论领取是否成功，都会返回最新的积分信息。
+
+**请求头**:
+- `Authorization`: Bearer token，多个token用逗号分隔
+
+**响应格式**:
+```json
+[
+  {
+    "token": "your_token",
+    "credits": {
+      "giftCredit": 10,
+      "purchaseCredit": 0,
+      "vipCredit": 0,
+      "totalCredit": 10
+    }
+  }
+]
+```
+
+**使用示例**:
+```bash
+# 单个token
+curl -X POST http://localhost:5100/token/receive \
+  -H "Authorization: Bearer YOUR_SESSION_ID"
+
+# 多个token批量签到
+curl -X POST http://localhost:5100/token/receive \
+  -H "Authorization: Bearer TOKEN1,TOKEN2,TOKEN3"
+```
 
 ### Token API
 
