@@ -28,3 +28,18 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  jimeng-web-ui:
+    # Web UI（前端静态站点）
+    # 访问地址：http://localhost:9901
+    # 默认 API 地址：http://localhost:5100（可在页面「设置」中修改）
+    build:
+      context: ./jimeng-web-ui
+      dockerfile: Dockerfile
+    image: jimeng-web-ui:latest
+    container_name: jimeng-web-ui
+    restart: unless-stopped
+    depends_on:
+      - jimeng-api
+    ports:
+      - "9901:80"
