@@ -1,0 +1,116 @@
+import { defineStore } from 'pinia'
+import { ref, computed } from 'vue'
+import type { Region } from '../types'
+import { formatAuthHeader } from '../utils/region-prefix'
+import { apiService } from '../services/api.service'
+
+const STORAGE_KEY = 'jimeng_settings'
+
+interface StoredSettings {
+  apiBaseUrl: string
+  sessionId: string
+  region: Region
+}
+
+export const useSettingsStore = defineStore('settings', () => {
+  // State
+  const apiBaseUrl = ref('http://localhost:5100')
+  const sessionId = ref('')
+  const region = ref<Region>('cn')
+
+  // Getters
+  const isConfigured = computed(() => sessionId.value.length > 0)
+
+  const formattedSessionId = computed(() => {
+    if (!sessionId.value) return ''
+    const prefix = region.value === 'cn' ? '' : `${region.value}-`
+    return `${prefix}${sessionId.value}`
+  })
+
+  const authHeader = computed(() => {
+    if (!sessionId.value) return ''
+    return formatAuthHeader(sessionId.value, region.value)
+  })
+
+  // Actions
+  function setConfig(config: Partial<StoredSettings>) {
+    if (config.apiBaseUrl !== undefined) apiBaseUrl.value = config.apiBaseUrl
+    if (config.sessionId !== undefined) sessionId.value = config.sessionId
+    if (config.region !== undefined) region.value = config.region
+    saveToStorage()
+  }
+
+  function loadFromStorage() {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY)
+      if (stored) {
+        const parsed: StoredSettings = JSON.parse(stored)
+        apiBaseUrl.value = parsed.apiBaseUrl || 'http://localhost:5100'
+        sessionId.value = parsed.sessionId || ''
+        region.value = parsed.region || 'cn'
+      }
+    } catch {
+      // If parsing fails, use defaults
+    }
+  }
+
+  function saveToStorage() {
+    const settings: StoredSettings = {
+      apiBaseUrl: apiBaseUrl.value,
+      sessionId: sessionId.value,
+      region: region.value,
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
+  }
+
+  function clearConfig() {
+    apiBaseUrl.value = 'http://localhost:5100'
+    sessionId.value = ''
+    region.value = 'cn'
+    localStorage.removeItem(STORAGE_KEY)
+  }
+
+  async function generateNewSession(): Promise<{ success: boolean; message: string }> {
+    try {
+      // Set API config for the request
+      apiService.setConfig({
+        baseUrl: apiBaseUrl.value,
+        sessionId: sessionId.value || 'temp', // Use temp value for generation request
+        region: region.value,
+      })
+
+      const result = await apiService.generateSession()
+      
+      // Update the session ID with the new one
+      sessionId.value = result.sessionId
+      saveToStorage()
+      
+      return {
+        success: true,
+        message: result.message || 'Session ID 生成成功'
+      }
+    } catch (error: any) {
+      return {
+        success: false,
+        message: error.message || 'Session ID 生成失败'
+      }
+    }
+  }
+
+  return {
+    // State
+    apiBaseUrl,
+    sessionId,
+    region,
+    // Getters
+    isConfigured,
+    formattedSessionId,
+    authHeader,
+    // Actions
+    setConfig,
+    loadFromStorage,
+    saveToStorage,
+    clearConfig,
+    generateNewSession,
+  }
+})

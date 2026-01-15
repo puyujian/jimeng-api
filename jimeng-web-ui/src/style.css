@@ -1,0 +1,185 @@
+@import "tailwindcss";
+
+/* Custom theme configuration */
+@theme {
+  --color-primary-50: #eff6ff;
+  --color-primary-100: #dbeafe;
+  --color-primary-200: #bfdbfe;
+  --color-primary-300: #93c5fd;
+  --color-primary-400: #60a5fa;
+  --color-primary-500: #3b82f6;
+  --color-primary-600: #2563eb;
+  --color-primary-700: #1d4ed8;
+  --color-primary-800: #1e40af;
+  --color-primary-900: #1e3a8a;
+  --color-primary-950: #172554;
+
+  --color-secondary-50: #f8fafc;
+  --color-secondary-100: #f1f5f9;
+  --color-secondary-200: #e2e8f0;
+  --color-secondary-300: #cbd5e1;
+  --color-secondary-400: #94a3b8;
+  --color-secondary-500: #64748b;
+  --color-secondary-600: #475569;
+  --color-secondary-700: #334155;
+  --color-secondary-800: #1e293b;
+  --color-secondary-900: #0f172a;
+  --color-secondary-950: #020617;
+}
+
+/* ===== Global Transitions ===== */
+
+/* Fade transition */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* Slide fade transition */
+.slide-fade-enter-active,
+.slide-fade-leave-active {
+  transition: all 0.25s ease;
+}
+
+.slide-fade-enter-from {
+  opacity: 0;
+  transform: translateX(-20px);
+}
+
+.slide-fade-leave-to {
+  opacity: 0;
+  transform: translateX(20px);
+}
+
+/* Scale fade transition */
+.scale-fade-enter-active,
+.scale-fade-leave-active {
+  transition: all 0.2s ease;
+}
+
+.scale-fade-enter-from,
+.scale-fade-leave-to {
+  opacity: 0;
+  transform: scale(0.95);
+}
+
+/* Modal transition */
+.modal-enter-active,
+.modal-leave-active {
+  transition: all 0.3s ease;
+}
+
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
+  transform: scale(0.9);
+}
+
+/* List transitions */
+.list-enter-active,
+.list-leave-active {
+  transition: all 0.3s ease;
+}
+
+.list-enter-from,
+.list-leave-to {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.list-move {
+  transition: transform 0.3s ease;
+}
+
+/* ===== Loading States ===== */
+
+/* Skeleton loading animation */
+@keyframes skeleton-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.skeleton-loading {
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+  background: linear-gradient(
+    90deg,
+    theme('colors.gray.200') 25%,
+    theme('colors.gray.300') 50%,
+    theme('colors.gray.200') 75%
+  );
+  background-size: 200% 100%;
+}
+
+/* Shimmer effect */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.shimmer {
+  animation: shimmer 1.5s infinite;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.2) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+}
+
+/* ===== Interactive Element Transitions ===== */
+
+/* Button hover/active states */
+.btn-transition {
+  transition: all 0.15s ease;
+}
+
+.btn-transition:hover {
+  transform: translateY(-1px);
+}
+
+.btn-transition:active {
+  transform: translateY(0);
+}
+
+/* Card hover effect */
+.card-hover {
+  transition: all 0.2s ease;
+}
+
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+}
+
+/* Image hover zoom */
+.img-zoom {
+  transition: transform 0.3s ease;
+}
+
+.img-zoom:hover {
+  transform: scale(1.02);
+}
+
+/* Focus ring animation */
+.focus-ring {
+  transition: box-shadow 0.15s ease;
+}
+
+.focus-ring:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3);
+}

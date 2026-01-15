@@ -5,6 +5,7 @@ import ping from "./ping.ts";
 import token from './token.js';
 import models from './models.ts';
 import videos from './videos.ts';
+import session from './session.ts';
 
 export default [
     {
@@ -22,6 +23,7 @@ export default [
                         videos: '/v1/videos/generations',
                         chat: '/v1/chat/completions',
                         models: '/v1/models',
+                        session: '/v1/session/generate',
                         health: '/ping'
                     }
                 };
@@ -33,5 +35,6 @@ export default [
     ping,
     token,
     models,
-    videos
+    videos,
+    session
 ];

@@ -30,6 +30,7 @@ exclude_list.txt
 *.swp
 *.swo
 .claude
+.kiro
 
 # OS
 .DS_Store
