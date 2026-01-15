@@ -354,7 +354,7 @@ async function generateImagesInternal(
   //   prompt.includes("故事") ||
   //   /\d+张/.test(prompt)
   // );
-const isJimeng4xMultiImage = ['jimeng-4.0', 'jimeng-4.1', 'jimeng-4.5'].includes(userModel);
+  const isJimeng4xMultiImage = ['jimeng-4.0', 'jimeng-4.1', 'jimeng-4.5'].includes(userModel);
   if (isJimeng4xMultiImage) {
     return await generateJimeng4xMultiImages(userModel, prompt, { ratio, resolution, sampleStrength, negativePrompt, intelligentRatio }, refreshToken);
   }
