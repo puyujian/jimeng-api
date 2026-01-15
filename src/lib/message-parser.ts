@@ -85,20 +85,21 @@ function parseMessageContent(content: any): { text: string; images: MessageImage
       }
     }
   } else if (_.isObject(content)) {
+    const contentObj = content as any;
     // 可能是单个内容对象
-    if ((content.type === 'text' || content.type === 'input_text') && content.text) {
-      text.push(content.text);
-    } else if ((content.type === 'image_url' || content.type === 'input_image') && content.image_url) {
-      const imageUrl = _.isString(content.image_url) ? content.image_url : content.image_url.url;
+    if ((contentObj.type === 'text' || contentObj.type === 'input_text') && contentObj.text) {
+      text.push(contentObj.text);
+    } else if ((contentObj.type === 'image_url' || contentObj.type === 'input_image') && contentObj.image_url) {
+      const imageUrl = _.isString(contentObj.image_url) ? contentObj.image_url : contentObj.image_url.url;
       addImage(images, imageUrl);
-    } else if ((content.type === 'input_image' || content.type === 'image') && content.image_base64) {
-      addImage(images, content.image_base64);
-    } else if ((content.type === 'input_image' || content.type === 'image') && content.image_bytes) {
-      addImage(images, content.image_bytes);
-    } else if ((content.type === 'image_url' || content.type === 'image') && content.url) {
-      addImage(images, content.url);
-    } else if (content.b64_json) {
-      addImage(images, content.b64_json);
+    } else if ((contentObj.type === 'input_image' || contentObj.type === 'image') && contentObj.image_base64) {
+      addImage(images, contentObj.image_base64);
+    } else if ((contentObj.type === 'input_image' || contentObj.type === 'image') && contentObj.image_bytes) {
+      addImage(images, contentObj.image_bytes);
+    } else if ((contentObj.type === 'image_url' || contentObj.type === 'image') && contentObj.url) {
+      addImage(images, contentObj.url);
+    } else if (contentObj.b64_json) {
+      addImage(images, contentObj.b64_json);
     }
   }
 

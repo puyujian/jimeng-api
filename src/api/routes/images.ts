@@ -132,11 +132,11 @@ export default {
           if (!_.isString(image) && !_.isObject(image)) {
             throw new Error(`图片 ${index + 1} 格式不正确：应为URL字符串或包含url字段的对象`);
           }
-          if (_.isObject(image) && !image.url) {
+          if (_.isObject(image) && !(image as any).url) {
             throw new Error(`图片 ${index + 1} 缺少url字段`);
           }
         });
-        images = bodyImages.map((image: any) => _.isString(image) ? image : image.url);
+        images = bodyImages.map((image: any) => (_.isString(image) ? image : (image as any).url));
       }
 
       const tokens = tokenSplit(request.headers.authorization);

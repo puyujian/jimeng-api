@@ -16,7 +16,7 @@
     "dev": "tsup src/index.ts --format cjs,esm --sourcemap --dts --watch --onSuccess \"node --enable-source-maps --no-node-snapshot dist/index.js\"",
     "start": "node --enable-source-maps --no-node-snapshot dist/index.js",
     "build": "tsup src/index.ts --format cjs,esm --sourcemap --dts --clean",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm run type-check && npm run build && node --test test/smoke.test.js",
     "format": "prettier --write \"src/**/*.{ts,js,json}\"",
     "type-check": "tsc --noEmit"
   },

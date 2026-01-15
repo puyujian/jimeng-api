@@ -100,7 +100,10 @@ class Logger {
     config = {};
     /** @type {Object} 日志级别映射 */
     static Level = {
+        Fatal: "fatal",
+        Success: "success",
         Info: "info",
+        Log: "log",
         Debug: "debug",
         Warning: "warning",
         Error: "error",
