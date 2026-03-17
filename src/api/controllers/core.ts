@@ -38,7 +38,7 @@ const MODEL_NAME = "jimeng";
 const DEVICE_ID = Math.random() * 999999999999999999 + 7000000000000000000;
 // WebID
 const WEB_ID = Math.random() * 999999999999999999 + 7000000000000000000;
-// 用户ID
+// 用户ID（32位hex，无横线）
 const USER_ID = util.uuid(false);
 // 伪装headers
 const FAKE_HEADERS = {
@@ -165,24 +165,15 @@ export function generateCookie(refreshToken: string) {
     ? tokenWithRegion.substring(3)
     : tokenWithRegion;
 
-  let storeRegion = 'cn-gd';
-  if (isUS) storeRegion = 'us';
-  else if (isHK) storeRegion = 'hk';
-  else if (isJP) storeRegion = 'hk'; // JP uses HK store region
-  else if (isSG) storeRegion = 'hk'; // SG uses HK store region
-
   return [
     `_tea_web_id=${WEB_ID}`,
     `is_staff_user=false`,
-    `store-region=${storeRegion}`,
-    `store-region-src=uid`,
     `sid_guard=${token}%7C${util.unixTimestamp()}%7C5184000%7CMon%2C+03-Feb-2025+08%3A17%3A09+GMT`,
     `uid_tt=${USER_ID}`,
     `uid_tt_ss=${USER_ID}`,
     `sid_tt=${token}`,
     `sessionid=${token}`,
     `sessionid_ss=${token}`,
-    `sid_tt=${token}`
   ].join("; ");
 }
 
@@ -302,7 +293,7 @@ export async function request(
     ...(isUS || isHK || isJP || isSG ? {} : { webId: WEB_ID }),
     da_version: DA_VERSION,
     os: "windows",
-    web_component_open_flag: 0,
+    web_component_open_flag: 1,
     web_version: WEB_VERSION,
     aigc_features: "app_lip_sync",
     ...(options.params || {}),
@@ -312,11 +303,15 @@ export async function request(
     ...FAKE_HEADERS,
     Origin: origin,
     Referer: origin,
+    "App-Sdk-Version": "48.0.0",
     Appid: aid,
     Cookie: generateCookie(tokenWithRegion),
     "Device-Time": deviceTime,
+    Lan: isUS ? "en" : isJP ? "ja" : (isHK || isSG) ? "en" : "zh-Hans",
+    Loc: isUS ? "us" : isJP ? "jp" : isHK ? "hk" : isSG ? "sg" : "cn",
     Sign: sign,
     "Sign-Ver": "1",
+    Tdid: "",
     ...(options.headers || {}),
   };
 
@@ -354,7 +349,7 @@ export async function request(
         headers: headers,
         timeout: 45000, // 增加超时时间到45秒
         validateStatus: () => true, // 允许任何状态码
-        ..._.omit(options, "params", "headers"),
+        ..._.omit(options, "params", "headers", "noDefaultParams"),
         ...(proxyAgent ? { httpAgent: proxyAgent, httpsAgent: proxyAgent, proxy: false } : {}),
       });
 
@@ -424,6 +419,64 @@ export async function request(
     throw error;
   }
  }
+
+/**
+ * 检测上传图片内容合规性（仅国内站）
+ * 调用 algo_proxy 接口进行图片安全检测，不通过则抛出异常
+ *
+ * @param imageUri 已上传图片的 URI
+ * @param refreshToken 刷新令牌
+ * @param regionInfo 区域信息
+ */
+export async function checkImageContent(
+  imageUri: string,
+  refreshToken: string,
+  regionInfo: RegionInfo
+): Promise<void> {
+  // 仅国内站需要内容检测
+  if (regionInfo.isInternational) return;
+
+  const babiParam = JSON.stringify({
+    scenario: "image_video_generation",
+    feature_key: "aigc_to_image",
+    feature_entrance: "to-generate",
+    feature_entrance_detail: "to-generate-algo_proxy",
+  });
+
+  logger.info(`开始图片内容安全检测: ${imageUri}`);
+
+  try {
+    await request("post", "/mweb/v1/algo_proxy", refreshToken, {
+      params: {
+        babi_param: babiParam,
+      },
+      data: {
+        scene: "image_face_ip",
+        options: { ip_check: true },
+        req_key: "benchmark_test_user_upload_image_input",
+        file_list: [{ file_uri: imageUri }],
+        req_params: {},
+      },
+    });
+    logger.info(`图片内容安全检测通过: ${imageUri}`);
+  } catch (error: any) {
+    // 区分内容违规(ret=2003等) vs 网络/服务异常
+    const isContentViolation = error.message && (
+      error.message.includes('2003') ||
+      error.message.includes('risk not pass') ||
+      error.message.includes('detected risk')
+    );
+    if (isContentViolation) {
+      logger.error(`图片内容安全检测未通过: ${imageUri}, ${error.message}`);
+      throw new APIException(
+        EX.API_REQUEST_FAILED,
+        `图片内容检测未通过，该图片可能包含违规内容`
+      );
+    }
+    // 网络/服务异常不阻塞，仅记录警告
+    logger.warn(`图片内容安全检测服务异常(不阻塞): ${imageUri}, ${error.message}`);
+  }
+}
 
  /**
   * 预检查文件URL有效性

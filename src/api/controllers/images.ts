@@ -3,7 +3,7 @@ import _ from "lodash";
 import APIException from "@/lib/exceptions/APIException.ts";
 import EX from "@/api/consts/exceptions.ts";
 import util from "@/lib/util.ts";
-import { getCredit, receiveCredit, request, parseRegionFromToken, getAssistantId, RegionInfo } from "./core.ts";
+import { getCredit, receiveCredit, request, parseRegionFromToken, getAssistantId, checkImageContent, RegionInfo } from "./core.ts";
 import logger from "@/lib/logger.ts";
 import { SmartPoller, PollingStatus } from "@/lib/smart-poller.ts";
 import { DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_MODEL_US, IMAGE_MODEL_MAP, IMAGE_MODEL_MAP_US, IMAGE_MODEL_MAP_ASIA } from "@/api/consts/common.ts";
@@ -141,12 +141,13 @@ export async function generateImageComposition(
       let imageId: string;
       if (typeof image === 'string') {
         logger.info(`正在处理第 ${i + 1}/${imageCount} 张图片 (URL)...`);
-        imageId = await uploadImageFromUrl(image, refreshToken, regionInfo);
+        imageId = (await uploadImageFromUrl(image, refreshToken, regionInfo)).uri;
       } else {
         logger.info(`正在处理第 ${i + 1}/${imageCount} 张图片 (Buffer)...`);
-        imageId = await uploadImageBuffer(image, refreshToken, regionInfo);
+        imageId = (await uploadImageBuffer(image, refreshToken, regionInfo)).uri;
       }
       uploadedImageIds.push(imageId);
+      await checkImageContent(imageId, refreshToken, regionInfo);
       logger.info(`图片 ${i + 1}/${imageCount} 上传成功: ${imageId}`);
     } catch (error) {
       logger.error(`图片 ${i + 1}/${imageCount} 上传失败: ${error.message}`);
@@ -184,6 +185,7 @@ export async function generateImageComposition(
   // 使用 payload-builder 构建 metrics_extra
   const metricsExtra = buildMetricsExtra({
     userModel,
+    model,
     regionInfo,
     submitId,
     scene: "ImageBasicGenerate",
@@ -219,11 +221,15 @@ export async function generateImageComposition(
     metricsExtra,
   });
 
+  const imageReferer = regionInfo.isCN
+    ? "https://jimeng.jianying.com/ai-tool/generate?type=image"
+    : "https://dreamina.capcut.com/ai-tool/generate?type=image";
+
   const { aigc_data } = await request(
     "post",
     "/mweb/v1/aigc_draft/generate",
     refreshToken,
-    { data: requestData }
+    { data: requestData, headers: { Referer: imageReferer } }
   );
 
   const historyId = aigc_data?.history_record_id;
@@ -235,9 +241,10 @@ export async function generateImageComposition(
   // 轮询结果
   const poller = new SmartPoller({
     maxPollCount: 900,
+    pollInterval: 10000, // 10秒轮询间隔
     expectedItemCount: 1,
     type: 'image',
-    timeoutSeconds: 900 // 15 分钟超时
+    timeoutSeconds: 1800 // 30 分钟超时
   });
 
   const { result: pollingResult, data: finalTaskInfo } = await poller.poll(async () => {
@@ -401,6 +408,7 @@ async function generateImagesInternal(
   // 使用 payload-builder 构建 metrics_extra
   const metricsExtra = buildMetricsExtra({
     userModel,
+    model,
     regionInfo,
     submitId,
     scene: "ImageBasicGenerate",
@@ -424,11 +432,15 @@ async function generateImagesInternal(
     metricsExtra,
   });
 
+  const imageReferer = regionInfo.isCN
+    ? "https://jimeng.jianying.com/ai-tool/generate?type=image"
+    : "https://dreamina.capcut.com/ai-tool/generate?type=image";
+
   const { aigc_data } = await request(
     "post",
     "/mweb/v1/aigc_draft/generate",
     refreshToken,
-    { data: requestData }
+    { data: requestData, headers: { Referer: imageReferer } }
   );
 
   const historyId = aigc_data?.history_record_id;
@@ -438,9 +450,10 @@ async function generateImagesInternal(
   // 轮询结果
   const poller = new SmartPoller({
     maxPollCount: 900,
+    pollInterval: 10000, // 10秒轮询间隔
     expectedItemCount: 4,
     type: 'image',
-    timeoutSeconds: 900 // 15 分钟超时
+    timeoutSeconds: 1800 // 30 分钟超时
   });
 
   const { result: pollingResult, data: finalTaskInfo } = await poller.poll(async () => {
@@ -549,6 +562,7 @@ async function generateJimeng4xMultiImages(
   // 使用 payload-builder 构建 metrics_extra (多图模式)
   const metricsExtra = buildMetricsExtra({
     userModel,
+    model,
     regionInfo,
     submitId,
     scene: "ImageMultiGenerate",
@@ -573,11 +587,15 @@ async function generateJimeng4xMultiImages(
     metricsExtra,
   });
 
+  const imageReferer = regionInfo.isCN
+    ? "https://jimeng.jianying.com/ai-tool/generate?type=image"
+    : "https://dreamina.capcut.com/ai-tool/generate?type=image";
+
   const { aigc_data } = await request(
     "post",
     "/mweb/v1/aigc_draft/generate",
     refreshToken,
-    { data: requestData }
+    { data: requestData, headers: { Referer: imageReferer } }
   );
 
   const historyId = aigc_data?.history_record_id;
@@ -589,9 +607,10 @@ async function generateJimeng4xMultiImages(
   // 轮询结果
   const poller = new SmartPoller({
     maxPollCount: 600,
+    pollInterval: 10000, // 10秒轮询间隔
     expectedItemCount: targetImageCount,
     type: 'image',
-    timeoutSeconds: 900 // 15 分钟超时
+    timeoutSeconds: 1800 // 30 分钟超时
   });
 
   const { result: pollingResult, data: finalTaskInfo } = await poller.poll(async () => {
