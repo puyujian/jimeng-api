@@ -46,6 +46,19 @@ const refs = {
   overviewNote: document.getElementById("overview-note"),
 };
 
+function activateView(showElement, hideElement) {
+  if (hideElement) {
+    hideElement.classList.remove("is-visible");
+    hideElement.hidden = true;
+  }
+
+  if (!showElement) return;
+  showElement.hidden = false;
+  requestAnimationFrame(() => {
+    showElement.classList.add("is-visible");
+  });
+}
+
 function prefersReducedMotion() {
   return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
 }
@@ -121,13 +134,11 @@ function appendLog(title, detail) {
 }
 
 function showLogin() {
-  refs.loginView.hidden = false;
-  refs.appView.hidden = true;
+  activateView(refs.loginView, refs.appView);
 }
 
 function showApp() {
-  refs.loginView.hidden = true;
-  refs.appView.hidden = false;
+  activateView(refs.appView, refs.loginView);
 }
 
 function formatTime(value) {
@@ -322,8 +333,10 @@ function renderMetrics(overview) {
 
   refs.metricsGrid.innerHTML = metrics
     .map(
-      (item) => `
-        <article class="metric-card" ${item.tone ? `data-tone="${item.tone}"` : ""}>
+      (item, index) => `
+        <article class="metric-card motion-item" style="--item-index:${index}" ${
+          item.tone ? `data-tone="${item.tone}"` : ""
+        }>
           <span class="muted">${escapeHtml(item.label)}</span>
           <div class="metric-meta">
             <strong>${escapeHtml(item.value)}</strong>
@@ -367,10 +380,10 @@ function renderAccounts(accounts) {
 
   refs.accountsTableBody.innerHTML = accounts
     .map(
-      (item) => `
-        <tr>
-          <td>${statusPill(item.status, item.blacklisted)}</td>
-          <td>
+      (item, index) => `
+        <tr class="motion-item" style="--item-index:${index}">
+          <td data-label="状态">${statusPill(item.status, item.blacklisted)}</td>
+          <td data-label="邮箱">
             <strong class="table-title">${escapeHtml(item.email)}</strong>
             <div class="pill-row">
               <span class="pill ${item.enabled ? "ok" : "warn"}">${item.enabled ? "启用" : "停用"}</span>
@@ -379,19 +392,19 @@ function renderAccounts(accounts) {
             <div class="table-subline">${escapeHtml(item.notes || "无备注")}</div>
             <div class="table-subline">${escapeHtml(item.proxyPreview ? `代理: ${item.proxyPreview}` : "代理: 直连")}</div>
           </td>
-          <td class="table-stat">
+          <td class="table-stat" data-label="Session">
             <strong class="mono">${escapeHtml(item.sessionIdPreview || "—")}</strong>
             <div class="table-subline">刷新: ${escapeHtml(formatTime(item.sessionUpdatedAt))}</div>
           </td>
-          <td class="table-stat">
+          <td class="table-stat" data-label="并发">
             <strong>${escapeHtml(item.activeLeases)} / ${escapeHtml(item.maxConcurrency)}</strong>
             <div class="table-subline">验证: ${escapeHtml(statusLabel(item.lastValidationStatus || "unknown"))}</div>
           </td>
-          <td class="table-stat">
+          <td class="table-stat" data-label="使用 / 错误">
             <strong>成功 ${escapeHtml(item.successCount)} / 失败 ${escapeHtml(item.failureCount)}</strong>
             <div class="table-subline">${escapeHtml(item.lastError || item.blacklistedReason || "无异常")}</div>
           </td>
-          <td>
+          <td data-label="操作">
             <div class="table-actions">
               <button class="ghost-btn" data-action="edit-account" data-id="${escapeHtml(item.id)}">编辑</button>
               <button class="ghost-btn" data-action="refresh-account" data-id="${escapeHtml(item.id)}">刷新</button>
@@ -419,25 +432,25 @@ function renderKeys(keys) {
 
   refs.keysTableBody.innerHTML = keys
     .map(
-      (item) => `
-        <tr>
-          <td>
+      (item, index) => `
+        <tr class="motion-item" style="--item-index:${index}">
+          <td data-label="名称">
             <strong class="table-title">${escapeHtml(item.name)}</strong>
             <div class="pill-row">
               <span class="pill ${item.enabled ? "ok" : "warn"}">${item.enabled ? "启用" : "停用"}</span>
             </div>
             <div class="table-subline">${escapeHtml(item.description || "无描述")}</div>
           </td>
-          <td>
+          <td data-label="完整密钥">
             <div class="inline-secret">${escapeHtml(
               item.rawKey ||
                 (item.rawKeyLocked ? "当前实例无法解密该密钥" : "旧密钥尚未保存原文，请先使用或重置")
             )}</div>
             <div class="table-subline">${escapeHtml(item.keyPreview)}</div>
           </td>
-          <td><div class="pill-row">${abilityLabels(item.allowedAbilities)}</div></td>
-          <td>${escapeHtml(formatTime(item.lastUsedAt))}</td>
-          <td>
+          <td data-label="能力"><div class="pill-row">${abilityLabels(item.allowedAbilities)}</div></td>
+          <td data-label="最近使用">${escapeHtml(formatTime(item.lastUsedAt))}</td>
+          <td data-label="操作">
             <div class="table-actions">
               ${
                 item.rawKey
