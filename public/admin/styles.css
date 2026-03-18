@@ -972,8 +972,100 @@ button:disabled {
 }
 
 .outbound-log {
+  display: grid;
+  gap: 12px;
   min-height: 260px;
   max-height: 540px;
+  overflow: auto;
+}
+
+.outbound-log-empty {
+  padding: 18px;
+  border-radius: var(--radius-lg);
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  color: var(--muted);
+}
+
+.outbound-log-item {
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(4, 13, 19, 0.28)),
+    rgba(3, 11, 16, 0.82);
+}
+
+.outbound-log-summary {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.outbound-log-summary:focus-visible {
+  outline: none;
+}
+
+.outbound-log-summary-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+  width: 100%;
+  padding: 16px 18px;
+  border-radius: calc(var(--radius-lg) - 1px);
+  transition: background 160ms ease;
+}
+
+.outbound-log-summary:hover .outbound-log-summary-layout,
+.outbound-log-summary:focus-visible .outbound-log-summary-layout {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.outbound-log-main,
+.outbound-log-side {
+  display: grid;
+  gap: 8px;
+}
+
+.outbound-log-side {
+  justify-items: end;
+  text-align: right;
+}
+
+.outbound-log-account,
+.outbound-log-duration {
+  font-size: 0.96rem;
+  color: #edf6f7;
+}
+
+.outbound-log-pills {
+  gap: 8px;
+}
+
+.outbound-log-subline,
+.outbound-log-detail-meta {
+  word-break: break-all;
+}
+
+.outbound-log-detail {
+  display: grid;
+  gap: 10px;
+  padding: 0 18px 18px;
+}
+
+.outbound-log-item[data-expanded="true"] .outbound-log-detail {
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.outbound-log-detail-text {
+  min-height: 0;
+  max-height: 280px;
 }
 
 .helper-copy {
@@ -1049,6 +1141,15 @@ button:disabled {
   .toolbar-actions > button,
   .form-actions > button {
     flex: 1 1 220px;
+  }
+
+  .outbound-log-summary-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .outbound-log-side {
+    justify-items: start;
+    text-align: left;
   }
 }
 

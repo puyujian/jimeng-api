@@ -4,6 +4,7 @@ import SYSTEM_EX from "@/lib/consts/exceptions.ts";
 import APIException from "@/lib/exceptions/APIException.ts";
 import Exception from "@/lib/exceptions/Exception.ts";
 import logger from "@/lib/logger.ts";
+import { runWithOutboundLogContext } from "@/lib/outbound-log-context.ts";
 import HaochiStateStore from "@/haochi/storage/state-store.ts";
 import type {
   AccountLease,
@@ -40,6 +41,25 @@ import {
 
 function createHttpError(message: string, statusCode = 400) {
   return new Exception(SYSTEM_EX.SYSTEM_REQUEST_VALIDATION_ERROR, message).setHTTPStatusCode(statusCode);
+}
+
+function buildOutboundContext(
+  ability: PoolAbility,
+  mode: "legacy" | "pool",
+  options: {
+    accountId?: string;
+    accountEmail?: string | null;
+    apiKeyId?: string;
+  } = {}
+) {
+  return {
+    ability,
+    mode,
+    accountId: options.accountId || null,
+    accountEmail: options.accountEmail || null,
+    accountLabel: options.accountEmail || (mode === "legacy" ? "直传令牌" : "未知账号"),
+    apiKeyId: options.apiKeyId || null,
+  };
 }
 
 function emptySessionTokens(): AccountSessionTokens {
@@ -1554,11 +1574,19 @@ export default class AccountPoolService {
     }
 
     try {
-      const result = await handler(nextToken, {
-        mode: "pool",
-        accountId,
-        apiKeyId,
-      });
+      const result = await runWithOutboundLogContext(
+        buildOutboundContext(ability, "pool", {
+          accountId,
+          accountEmail: refreshed.email,
+          apiKeyId,
+        }),
+        () =>
+          handler(nextToken, {
+            mode: "pool",
+            accountId,
+            apiKeyId,
+          })
+      );
       await this.#markAccountSuccess(accountId);
       await this.#markApiKeyUsed(apiKeyId);
       logger.info(`账号 ${refreshed.email} 自动刷新后重试成功`);
@@ -1627,7 +1655,9 @@ export default class AccountPoolService {
         throw createHttpError("当前实例已禁用直接透传 Authorization，请改用外部 API Key", 403);
       }
       const token = this.#pickLegacyToken(authorization);
-      return handler(token, { mode: "legacy" });
+      return runWithOutboundLogContext(buildOutboundContext(ability, "legacy"), () =>
+        handler(token, { mode: "legacy" })
+      );
     }
 
     if (!managedApiKey.enabled) throw createHttpError("API Key 已禁用", 403);
@@ -1654,11 +1684,19 @@ export default class AccountPoolService {
       }
 
       try {
-        const result = await handler(token, {
-          mode: "pool",
-          accountId: selected.account.id,
-          apiKeyId: managedApiKey.id,
-        });
+        const result = await runWithOutboundLogContext(
+          buildOutboundContext(ability, "pool", {
+            accountId: selected.account.id,
+            accountEmail: selected.account.email,
+            apiKeyId: managedApiKey.id,
+          }),
+          () =>
+            handler(token, {
+              mode: "pool",
+              accountId: selected.account.id,
+              apiKeyId: managedApiKey.id,
+            })
+        );
         await this.#markAccountSuccess(selected.account.id);
         await this.#markApiKeyUsed(managedApiKey.id);
         return result;

@@ -13,7 +13,12 @@ const state = {
   keysById: new Map(),
   clearSessionOnSave: false,
   outboundLogs: [],
+  outboundExpandedKeys: new Set(),
 };
+
+const OUTBOUND_LOG_AUTO_REFRESH_MS = 3000;
+let outboundLogRefreshTimer = null;
+let outboundLogRefreshPromise = null;
 
 const STATUS_LABELS = {
   healthy: "健康",
@@ -178,23 +183,37 @@ function appendLog(title, detail) {
 
 function renderOutboundLogs(payload) {
   state.outboundLogs = payload.entries || [];
+  const visibleKeys = new Set();
+  state.outboundLogs.forEach((entry) => {
+    const aliasKeys = outboundEntryKeys(entry);
+    if (aliasKeys.some((key) => state.outboundExpandedKeys.has(key))) {
+      state.outboundExpandedKeys.add(outboundEntryKey(entry));
+    }
+    aliasKeys.forEach((key) => visibleKeys.add(key));
+  });
+  Array.from(state.outboundExpandedKeys).forEach((taskKey) => {
+    if (!visibleKeys.has(taskKey)) {
+      state.outboundExpandedKeys.delete(taskKey);
+    }
+  });
   const updatedAt = formatTime(payload.updatedAt);
 
   refs.outboundLogMeta.textContent = payload.available
     ? `文件 ${payload.fileName} | 显示 ${payload.returnedCount}/${payload.totalMatched} 条 | 最后更新 ${updatedAt}`
     : payload.emptyReason || "当前环境没有可读取的日志文件";
 
-  refs.outboundLog.textContent = state.outboundLogs.length
-    ? state.outboundLogs.map((entry) => entry.raw).join("\n")
-    : payload.emptyReason || "当前还没有外部调用日志";
+  refs.outboundLog.innerHTML = state.outboundLogs.length
+    ? state.outboundLogs.map((entry, index) => renderOutboundLogEntry(entry, index)).join("")
+    : `<div class="outbound-log-empty">${escapeHtml(payload.emptyReason || "当前还没有外部调用日志")}</div>`;
 }
 
 function renderOutboundLogError(error) {
   refs.outboundLogMeta.textContent = "调用日志加载失败";
-  refs.outboundLog.textContent = error?.message || "未知错误";
+  refs.outboundLog.innerHTML = `<div class="outbound-log-empty">${escapeHtml(error?.message || "未知错误")}</div>`;
 }
 
 function showLogin() {
+  stopOutboundLogAutoRefresh();
   activateView(refs.loginView, refs.appView);
 }
 
@@ -207,6 +226,122 @@ function formatTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
   return date.toLocaleString();
+}
+
+function formatOutboundTime(value) {
+  return value ? escapeHtml(value) : "—";
+}
+
+function formatDurationMs(value) {
+  const duration = Number(value);
+  if (!Number.isFinite(duration) || duration <= 0) return "—";
+  if (duration < 1000) return `${Math.round(duration)}ms`;
+  if (duration < 10000) return `${(duration / 1000).toFixed(2)}s`;
+  return `${(duration / 1000).toFixed(1)}s`;
+}
+
+function outboundPillTone(value) {
+  const text = String(value || "");
+  if (text.includes("失败") || text.includes("错误")) return "danger";
+  if (text.includes("中") || text.includes("请求中")) return "warn";
+  if (text.includes("成功") || text.includes("完成")) return "ok";
+  return "";
+}
+
+function renderOutboundPill(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const tone = outboundPillTone(text);
+  return `<span class="pill ${tone}">${escapeHtml(text)}</span>`;
+}
+
+function outboundEntryKey(entry) {
+  return String(entry?.taskKey || entry?.historyId || entry?.requestId || "").trim();
+}
+
+function outboundEntryKeys(entry) {
+  const keys = new Set();
+  const taskKey = outboundEntryKey(entry);
+  if (taskKey) keys.add(taskKey);
+  if (entry?.historyId) keys.add(`history:${entry.historyId}`);
+  if (entry?.groupId) keys.add(`group:${entry.groupId}`);
+  if (entry?.requestId) keys.add(`request:${entry.requestId}`);
+  return Array.from(keys);
+}
+
+function outboundDetailId(entry) {
+  const raw = outboundEntryKey(entry) || "outbound-log-entry";
+  return `outbound-log-detail-${raw.replace(/[^a-zA-Z0-9_-]+/g, "-")}`;
+}
+
+function buildOutboundSummaryText(entry) {
+  const failureReason = String(entry?.errorMessage || "").trim();
+  if (entry?.status === "error" && failureReason) {
+    return `失败原因: ${failureReason}`;
+  }
+
+  if (entry?.historyId && (entry?.requestKind === "提交任务" || entry?.requestKind === "轮询状态")) {
+    return `${entry.requestKind} · historyId: ${entry.historyId}`;
+  }
+
+  if (entry?.requestKind && entry.requestKind !== "外部调用") {
+    return `${entry.requestKind}${entry.requestPath ? ` · ${entry.requestPath}` : ""}`;
+  }
+
+  return `${entry?.method || "—"} ${entry?.requestPath || entry?.url || "—"}`;
+}
+
+function renderOutboundLogEntry(entry, index) {
+  const accountLabel = escapeHtml(entry.accountLabel || "未知账号");
+  const requestLine = escapeHtml(buildOutboundSummaryText(entry));
+  const duration = formatDurationMs(entry.durationMs);
+  const time = formatOutboundTime(entry.time);
+  const detailText = escapeHtml(entry.detailText || "");
+  const detailId = outboundDetailId(entry);
+  const taskKey = outboundEntryKey(entry);
+  const expanded = outboundEntryKeys(entry).some((key) => state.outboundExpandedKeys.has(key));
+  const detailMeta = [
+    entry.historyId ? `historyId: ${entry.historyId}` : "",
+    entry.httpStatus ? `HTTP ${entry.httpStatus}${entry.httpStatusText ? ` ${entry.httpStatusText}` : ""}` : "",
+    entry.requestMode ? `模式: ${entry.requestMode}` : "",
+    entry.ability ? `能力: ${entry.ability}` : "",
+    entry.errorCode ? `错误码: ${entry.errorCode}` : "",
+    entry.errorMessage ? `失败原因: ${entry.errorMessage}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return `
+    <article class="outbound-log-item" data-expanded="${expanded ? "true" : "false"}" data-task-key="${escapeHtml(taskKey)}">
+      <button
+        class="outbound-log-summary"
+        type="button"
+        data-outbound-toggle="true"
+        aria-expanded="${expanded ? "true" : "false"}"
+        aria-controls="${detailId}"
+      >
+        <div class="outbound-log-summary-layout">
+          <div class="outbound-log-main">
+            <strong class="outbound-log-account">${accountLabel}</strong>
+            <div class="pill-row outbound-log-pills">
+              ${renderOutboundPill(entry.attemptLabel)}
+              ${renderOutboundPill(entry.statusLabel)}
+              ${renderOutboundPill(entry.generationStatus)}
+            </div>
+            <div class="table-subline outbound-log-subline">${requestLine}</div>
+          </div>
+          <div class="outbound-log-side">
+            <strong class="outbound-log-duration">${escapeHtml(duration)}</strong>
+            <span class="table-subline">${time}</span>
+          </div>
+        </div>
+      </button>
+      <div class="outbound-log-detail" id="${detailId}"${expanded ? "" : " hidden"}>
+        <p class="table-subline outbound-log-detail-meta">${escapeHtml(detailMeta || "无额外元信息")}</p>
+        <pre class="activity-log outbound-log-detail-text">${detailText || "暂无明细"}</pre>
+      </div>
+    </article>
+  `;
 }
 
 function formatAccountIssue(item) {
@@ -727,8 +862,44 @@ async function loadAccounts(options = {}) {
 }
 
 async function loadOutboundLogs() {
-  const payload = await apiFetch("/api/admin/logs/outbound?limit=120");
-  renderOutboundLogs(payload);
+  if (outboundLogRefreshPromise) return outboundLogRefreshPromise;
+
+  const previousScrollTop = refs.outboundLog?.scrollTop || 0;
+  outboundLogRefreshPromise = apiFetch("/api/admin/logs/outbound?limit=120")
+    .then((payload) => {
+      renderOutboundLogs(payload);
+      if (refs.outboundLog) {
+        refs.outboundLog.scrollTop = previousScrollTop;
+      }
+    })
+    .finally(() => {
+      outboundLogRefreshPromise = null;
+    });
+
+  return outboundLogRefreshPromise;
+}
+
+async function refreshOutboundLogsSilently() {
+  if (!state.user || refs.appView.hidden || document.hidden) return;
+  try {
+    await loadOutboundLogs();
+  } catch (error) {
+    console.warn("自动刷新外部调用日志失败", error);
+  }
+}
+
+function stopOutboundLogAutoRefresh() {
+  if (outboundLogRefreshTimer) {
+    window.clearInterval(outboundLogRefreshTimer);
+    outboundLogRefreshTimer = null;
+  }
+}
+
+function startOutboundLogAutoRefresh() {
+  stopOutboundLogAutoRefresh();
+  outboundLogRefreshTimer = window.setInterval(() => {
+    void refreshOutboundLogsSilently();
+  }, OUTBOUND_LOG_AUTO_REFRESH_MS);
 }
 
 async function reloadDashboard(options = {}) {
@@ -773,6 +944,7 @@ async function bootstrap() {
     state.user = auth.user;
     showApp();
     await reloadDashboard({ resetAccountPage: true, refreshLogs: true });
+    startOutboundLogAutoRefresh();
   } catch {
     showLogin();
   }
@@ -796,6 +968,7 @@ refs.loginForm.addEventListener("submit", async (event) => {
     setNotice("登录成功", "ok");
     refs.loginForm.reset();
     await reloadDashboard({ resetAccountPage: true, refreshLogs: true });
+    startOutboundLogAutoRefresh();
   } catch (error) {
     setNotice(error.message, "danger");
   }
@@ -960,6 +1133,40 @@ refs.reloadOutboundLogsButton.addEventListener("click", async (event) => {
   } catch (error) {
     renderOutboundLogError(error);
     setNotice(error.message, "danger");
+  }
+});
+
+refs.outboundLog.addEventListener("click", (event) => {
+  const target = event.target instanceof Element ? event.target : null;
+  const button = target?.closest("[data-outbound-toggle]");
+  if (!button || !refs.outboundLog.contains(button)) return;
+
+  const item = button.closest(".outbound-log-item");
+  const detail = item?.querySelector(".outbound-log-detail");
+  if (!(item instanceof HTMLElement) || !(detail instanceof HTMLElement)) return;
+
+  const expanded = button.getAttribute("aria-expanded") === "true";
+  const taskKey = String(item.dataset.taskKey || "").trim();
+  item.dataset.expanded = expanded ? "false" : "true";
+  button.setAttribute("aria-expanded", expanded ? "false" : "true");
+  detail.hidden = expanded;
+  if (taskKey) {
+    if (expanded) {
+      state.outboundExpandedKeys.delete(taskKey);
+    } else {
+      state.outboundExpandedKeys.add(taskKey);
+    }
+  }
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    stopOutboundLogAutoRefresh();
+    return;
+  }
+  if (!refs.appView.hidden && state.user) {
+    void refreshOutboundLogsSilently();
+    startOutboundLogAutoRefresh();
   }
 });
 

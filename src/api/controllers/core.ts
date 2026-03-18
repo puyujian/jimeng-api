@@ -341,6 +341,11 @@ export async function request(
   let lastError = null;
   let currentProxyUrl = proxyUrl;
   let directFallbackUsed = false;
+  const existingOutboundMeta =
+    options.__outboundLogMeta && typeof options.__outboundLogMeta === "object"
+      ? options.__outboundLogMeta
+      : {};
+  const outboundGroupId = String(existingOutboundMeta.groupId || util.uuid());
 
   while (retries <= maxRetries) {
     try {
@@ -363,7 +368,17 @@ export async function request(
         headers: headers,
         timeout: 45000, // 增加超时时间到45秒
         validateStatus: () => true, // 允许任何状态码
-        ..._.omit(options, "params", "headers", "noDefaultParams"),
+        __outboundLogMeta: {
+          ...existingOutboundMeta,
+          groupId: outboundGroupId,
+          requestAttempt: retries,
+          attemptLabel: retries > 0 ? `第 ${retries} 次重试` : "首次请求",
+          historyId:
+            Array.isArray((options.data as any)?.history_ids) && (options.data as any).history_ids.length
+              ? String((options.data as any).history_ids[0])
+              : null,
+        },
+        ..._.omit(options, "params", "headers", "noDefaultParams", "__outboundLogMeta"),
         ...(proxyAgent ? { httpAgent: proxyAgent, httpsAgent: proxyAgent, proxy: false } : {}),
       });
 
