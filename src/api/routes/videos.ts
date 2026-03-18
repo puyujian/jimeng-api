@@ -1,10 +1,12 @@
 import _ from 'lodash';
 
 import Request from '@/lib/request/Request.ts';
+import SYSTEM_EX from '@/lib/consts/exceptions.ts';
+import Exception from '@/lib/exceptions/Exception.ts';
 import Response from '@/lib/response/Response.ts';
-import { tokenSplit } from '@/api/controllers/core.ts';
 import { generateVideo, DEFAULT_MODEL } from '@/api/controllers/videos.ts';
 import util from '@/lib/util.ts';
+import { haochiAccountPoolService } from '@/haochi/index.ts';
 
 export default {
 
@@ -22,8 +24,10 @@ export default {
                 .validate('body.ratio', v => _.isUndefined(v) || _.isString(v))
                 .validate('body.resolution', v => _.isUndefined(v) || _.isString(v))
                 .validate('body.functionMode', v => _.isUndefined(v) || (_.isString(v) && ['first_last_frames', 'omni_reference'].includes(v)))
-                .validate('body.response_format', v => _.isUndefined(v) || _.isString(v))
-                .validate('headers.authorization', _.isString);
+                .validate('body.response_format', v => _.isUndefined(v) || _.isString(v));
+            if (!haochiAccountPoolService.hasCredential(request.headers)) {
+                throw new Exception(SYSTEM_EX.SYSTEM_REQUEST_VALIDATION_ERROR, '缺少 Authorization 或 X-API-Key').setHTTPStatusCode(401);
+            }
 
             const functionMode = request.body.functionMode || 'first_last_frames';
             const isOmniMode = functionMode === 'omni_reference';
@@ -136,11 +140,6 @@ export default {
                 }
             }
 
-            // refresh_token切分
-            const tokens = tokenSplit(request.headers.authorization);
-            // 随机挑选一个refresh_token
-            const token = _.sample(tokens);
-
             const {
                 model = DEFAULT_MODEL,
                 prompt,
@@ -161,19 +160,24 @@ export default {
             const finalFilePaths = filePaths.length > 0 ? filePaths : file_paths;
 
             // 生成视频
-            const generatedVideoUrl = await generateVideo(
-                model,
-                prompt,
-                {
-                    ratio,
-                    resolution,
-                    duration: finalDuration,
-                    filePaths: finalFilePaths,
-                    files: request.files, // 传递上传的文件
-                    httpRequest: request, // 传递完整的 request 对象以访问动态字段
-                    functionMode,
-                },
-                token
+            const generatedVideoUrl = await haochiAccountPoolService.runWithRequestToken(
+                request,
+                'videos',
+                async (token) =>
+                    generateVideo(
+                        model,
+                        prompt,
+                        {
+                            ratio,
+                            resolution,
+                            duration: finalDuration,
+                            filePaths: finalFilePaths,
+                            files: request.files,
+                            httpRequest: request,
+                            functionMode,
+                        },
+                        token
+                    )
             );
 
             // 根据response_format返回不同格式的结果

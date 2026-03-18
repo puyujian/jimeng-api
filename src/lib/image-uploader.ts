@@ -55,7 +55,7 @@ export async function uploadImageBuffer(
 
     // 准备文件信息
     const fileSize = imageBuffer.byteLength;
-    const crc32 = util.calculateCRC32(imageBuffer);
+    const crc32 = util.calculateCRC32(imageBuffer as ArrayBuffer | Buffer);
     logger.info(`图片Buffer: 大小=${fileSize}字节, CRC32=${crc32}`);
 
     // 第二步：申请图片上传权限

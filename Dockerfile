@@ -30,8 +30,15 @@ RUN npm run build
 # 生产阶段
 FROM node:18-alpine AS production
 
-# 安装健康检查工具
-RUN apk add --no-cache wget
+# 安装健康检查工具和 Chromium 运行依赖
+RUN apk add --no-cache \
+    wget \
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont
 
 # 创建非root用户
 RUN addgroup -g 1001 -S nodejs && \
@@ -51,13 +58,18 @@ RUN npm ci --omit=dev --registry https://registry.npmmirror.com/ && \
 # 从构建阶段复制构建产物
 COPY --from=builder --chown=jimeng:nodejs /app/dist ./dist
 COPY --from=builder --chown=jimeng:nodejs /app/configs ./configs
+COPY --from=builder --chown=jimeng:nodejs /app/public ./public
 
 # 创建应用需要的目录并设置权限
-RUN mkdir -p /app/logs /app/tmp && \
-    chown -R jimeng:nodejs /app/logs /app/tmp
+RUN mkdir -p /app/logs /app/tmp /app/data/haochi && \
+    chown -R jimeng:nodejs /app/logs /app/tmp /app/data
 
 # 设置环境变量
-ENV SERVER_PORT=5100
+ENV SERVER_PORT=5100 \
+    HAOCHI_STATE_PATH=/app/data/haochi/state.json \
+    HAOCHI_LOGIN_PROVIDER=dreamina \
+    HAOCHI_LOGIN_HEADLESS=1 \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 # 切换到非root用户
 USER jimeng

@@ -1,9 +1,11 @@
 import _ from 'lodash';
 
 import Request from '@/lib/request/Request.ts';
+import SYSTEM_EX from '@/lib/consts/exceptions.ts';
+import Exception from '@/lib/exceptions/Exception.ts';
 import Response from '@/lib/response/Response.ts';
-import { tokenSplit } from '@/api/controllers/core.ts';
 import { createCompletion, createCompletionStream } from '@/api/controllers/chat.ts';
+import { haochiAccountPoolService } from '@/haochi/index.ts';
 
 /**
  * 将 size 参数转换为 ratio 格式
@@ -47,11 +49,8 @@ export default {
                 .validate('body.duration', v => _.isUndefined(v) || _.isNumber(v))
                 .validate('body.sample_strength', v => _.isUndefined(v) || _.isNumber(v))
                 .validate('body.negative_prompt', v => _.isUndefined(v) || _.isString(v))
-                .validate('headers.authorization', _.isString)
-            // refresh_token切分
-            const tokens = tokenSplit(request.headers.authorization);
-            // 随机挑选一个refresh_token
-            const token = _.sample(tokens);
+            if (!haochiAccountPoolService.hasCredential(request.headers))
+                throw new Exception(SYSTEM_EX.SYSTEM_REQUEST_VALIDATION_ERROR, '缺少 Authorization 或 X-API-Key').setHTTPStatusCode(401);
             const { model, messages, stream, size, ratio, resolution, duration, sample_strength, negative_prompt } = request.body;
             
             // 如果提供了 size 参数，将其转换为 ratio（ratio 参数优先级更高）
@@ -62,13 +61,21 @@ export default {
             
             const options = { ratio: finalRatio, resolution, duration, sample_strength, negative_prompt };
             if (stream) {
-                const stream = await createCompletionStream(messages, token, model, options);
+                const stream = await haochiAccountPoolService.runWithRequestToken(
+                    request,
+                    'chat',
+                    async (token) => createCompletionStream(messages, token, model, options)
+                );
                 return new Response(stream, {
                     type: "text/event-stream"
                 });
             }
             else
-                return await createCompletion(messages, token, model, options);
+                return await haochiAccountPoolService.runWithRequestToken(
+                    request,
+                    'chat',
+                    async (token) => createCompletion(messages, token, model, options)
+                );
         }
 
     }

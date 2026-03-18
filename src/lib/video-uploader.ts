@@ -143,7 +143,7 @@ export async function uploadVideoBuffer(
 
     // 第三步：上传视频二进制数据
     const uploadUrl = `https://${uploadHost}/upload/v1/${storeUri}`;
-    const crc32 = util.calculateCRC32(videoBuffer);
+    const crc32 = util.calculateCRC32(videoBuffer as ArrayBuffer | Buffer);
     logger.info(`开始上传视频文件: ${uploadUrl}, CRC32=${crc32}`);
 
     let uploadResponse;

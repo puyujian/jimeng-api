@@ -4,8 +4,16 @@ import _ from "lodash";
 import Request from "@/lib/request/Request.ts";
 import { generateImages, generateImageComposition } from "@/api/controllers/images.ts";
 import { DEFAULT_IMAGE_MODEL } from "@/api/consts/common.ts";
-import { tokenSplit } from "@/api/controllers/core.ts";
+import SYSTEM_EX from "@/lib/consts/exceptions.ts";
+import Exception from "@/lib/exceptions/Exception.ts";
 import util from "@/lib/util.ts";
+import { haochiAccountPoolService } from "@/haochi/index.ts";
+
+function ensureCredential(request: Request) {
+  if (!haochiAccountPoolService.hasCredential(request.headers)) {
+    throw new Exception(SYSTEM_EX.SYSTEM_REQUEST_VALIDATION_ERROR, "缺少 Authorization 或 X-API-Key").setHTTPStatusCode(401);
+  }
+}
 
 export default {
   prefix: "/v1/images",
@@ -28,11 +36,8 @@ export default {
         .validate("body.resolution", v => _.isUndefined(v) || _.isString(v))
         .validate("body.intelligent_ratio", v => _.isUndefined(v) || _.isBoolean(v))
         .validate("body.sample_strength", v => _.isUndefined(v) || _.isFinite(v))
-        .validate("body.response_format", v => _.isUndefined(v) || _.isString(v))
-        .validate("headers.authorization", _.isString);
-
-      const tokens = tokenSplit(request.headers.authorization);
-      const token = _.sample(tokens);
+        .validate("body.response_format", v => _.isUndefined(v) || _.isString(v));
+      ensureCredential(request);
       const {
         model,
         prompt,
@@ -46,13 +51,23 @@ export default {
       const finalModel = _.defaultTo(model, DEFAULT_IMAGE_MODEL);
 
       const responseFormat = _.defaultTo(response_format, "url");
-      const imageUrls = await generateImages(finalModel, prompt, {
-        ratio,
-        resolution,
-        sampleStrength,
-        negativePrompt,
-        intelligentRatio,
-      }, token);
+      const imageUrls = await haochiAccountPoolService.runWithRequestToken(
+        request,
+        "images",
+        async (token) =>
+          generateImages(
+            finalModel,
+            prompt,
+            {
+              ratio,
+              resolution,
+              sampleStrength,
+              negativePrompt,
+              intelligentRatio,
+            },
+            token
+          )
+      );
       let data = [];
       if (responseFormat == "b64_json") {
         data = (
@@ -90,8 +105,7 @@ export default {
           .validate("body.resolution", v => _.isUndefined(v) || _.isString(v))
           .validate("body.intelligent_ratio", v => _.isUndefined(v) || (typeof v === 'string' && (v === 'true' || v === 'false')) || _.isBoolean(v))
           .validate("body.sample_strength", v => _.isUndefined(v) || (typeof v === 'string' && !isNaN(parseFloat(v))) || _.isFinite(v))
-          .validate("body.response_format", v => _.isUndefined(v) || _.isString(v))
-          .validate("headers.authorization", _.isString);
+          .validate("body.response_format", v => _.isUndefined(v) || _.isString(v));
       } else {
         request
           .validate("body.model", v => _.isUndefined(v) || _.isString(v))
@@ -102,13 +116,14 @@ export default {
           .validate("body.resolution", v => _.isUndefined(v) || _.isString(v))
           .validate("body.intelligent_ratio", v => _.isUndefined(v) || _.isBoolean(v))
           .validate("body.sample_strength", v => _.isUndefined(v) || _.isFinite(v))
-          .validate("body.response_format", v => _.isUndefined(v) || _.isString(v))
-          .validate("headers.authorization", _.isString);
+          .validate("body.response_format", v => _.isUndefined(v) || _.isString(v));
       }
+      ensureCredential(request);
 
       let images: (string | Buffer)[] = [];
       if (isMultiPart) {
-        const files = request.files?.images;
+        const filesMap: any = request.files || {};
+        const files = filesMap.images;
         if (!files) {
           throw new Error("在form-data中缺少 'images' 字段");
         }
@@ -132,15 +147,12 @@ export default {
           if (!_.isString(image) && !_.isObject(image)) {
             throw new Error(`图片 ${index + 1} 格式不正确：应为URL字符串或包含url字段的对象`);
           }
-          if (_.isObject(image) && !image.url) {
+          if (_.isObject(image) && !(image as any).url) {
             throw new Error(`图片 ${index + 1} 缺少url字段`);
           }
         });
-        images = bodyImages.map((image: any) => _.isString(image) ? image : image.url);
+        images = bodyImages.map((image: any) => _.isString(image) ? image : (image as any).url);
       }
-
-      const tokens = tokenSplit(request.headers.authorization);
-      const token = _.sample(tokens);
 
       const {
         model,
@@ -164,13 +176,24 @@ export default {
         : intelligentRatio;
 
       const responseFormat = _.defaultTo(response_format, "url");
-      const resultUrls = await generateImageComposition(finalModel, prompt, images, {
-        ratio,
-        resolution,
-        sampleStrength: finalSampleStrength,
-        negativePrompt,
-        intelligentRatio: finalIntelligentRatio,
-      }, token);
+      const resultUrls = await haochiAccountPoolService.runWithRequestToken(
+        request,
+        "images",
+        async (token) =>
+          generateImageComposition(
+            finalModel,
+            prompt,
+            images,
+            {
+              ratio,
+              resolution,
+              sampleStrength: finalSampleStrength,
+              negativePrompt,
+              intelligentRatio: finalIntelligentRatio,
+            },
+            token
+          )
+      );
 
       let data = [];
       if (responseFormat == "b64_json") {

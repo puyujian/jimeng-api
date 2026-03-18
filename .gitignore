@@ -55,6 +55,7 @@ coverage/
 # Temporary folders
 tmp/
 temp/
+data/
 jimeng-*.md
 scripts/
 .ace-tool/

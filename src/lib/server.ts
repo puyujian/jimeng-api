@@ -25,7 +25,7 @@ class Server {
         this.app.use(koaRange);
         this.router = new KoaRouter({ prefix: config.service.urlPrefix });
         // 前置处理异常拦截
-        this.app.use(async (ctx: any, next: Function) => {
+        this.app.use(async (ctx: any, next: any) => {
             if(ctx.request.type === "application/xml" || ctx.request.type === "application/ssml+xml")
                 ctx.req.headers["content-type"] = "text/xml";
             try { await next() }
@@ -36,7 +36,7 @@ class Server {
             }
         });
         // 自定义 JSON 解析中间件
-        this.app.use(async (ctx: any, next: Function) => {
+        this.app.use(async (ctx: any, next: any) => {
             if (ctx.is('application/json') && ['POST', 'PUT', 'PATCH'].includes(ctx.method)) {
                 logger.debug('开始自定义 JSON 解析');
                 const chunks: Buffer[] = [];
@@ -109,7 +109,7 @@ class Server {
         });
 
         // 载荷解析器支持（只处理未被自定义解析器处理的请求）
-        this.app.use(async (ctx: any, next: Function) => {
+        this.app.use(async (ctx: any, next: any) => {
             if (!ctx._jsonProcessed) {
                 await koaBody(Object.assign(_.clone(config.system.requestBody), {
                     multipart: true, // 开启multipart文件上传

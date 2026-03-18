@@ -2,7 +2,10 @@ import _ from 'lodash';
 
 import Request from '@/lib/request/Request.ts';
 import { getTokenLiveStatus, getCredit, receiveCredit, tokenSplit } from '@/api/controllers/core.ts';
+import SYSTEM_EX from '@/lib/consts/exceptions.ts';
+import Exception from '@/lib/exceptions/Exception.ts';
 import logger from '@/lib/logger.ts';
+import { haochiAccountPoolService } from '@/haochi/index.ts';
 
 export default {
 
@@ -20,8 +23,11 @@ export default {
         },
 
         '/points': async (request: Request) => {
-            request
-                .validate('headers.authorization', _.isString)
+            if (!haochiAccountPoolService.hasCredential(request.headers))
+                throw new Exception(SYSTEM_EX.SYSTEM_REQUEST_VALIDATION_ERROR, '缺少 Authorization 或 X-API-Key').setHTTPStatusCode(401);
+            if (haochiAccountPoolService.isManagedApiKeyRequest(request.headers))
+                return await haochiAccountPoolService.getManagedTokenPoints(request);
+            request.validate('headers.authorization', _.isString)
             // refresh_token切分
             const tokens = tokenSplit(request.headers.authorization);
             const points = await Promise.all(tokens.map(async (token) => {
@@ -34,8 +40,11 @@ export default {
         },
 
         '/receive': async (request: Request) => {
-            request
-                .validate('headers.authorization', _.isString)
+            if (!haochiAccountPoolService.hasCredential(request.headers))
+                throw new Exception(SYSTEM_EX.SYSTEM_REQUEST_VALIDATION_ERROR, '缺少 Authorization 或 X-API-Key').setHTTPStatusCode(401);
+            if (haochiAccountPoolService.isManagedApiKeyRequest(request.headers))
+                return await haochiAccountPoolService.receiveManagedTokenCredits(request);
+            request.validate('headers.authorization', _.isString)
             // refresh_token切分
             const tokens = tokenSplit(request.headers.authorization);
             const credits = await Promise.all(tokens.map(async (token) => {

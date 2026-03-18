@@ -39,11 +39,19 @@ class LogWriter {
     }
 
     work() {
-        if (!this.#buffers.length) return setTimeout(this.work.bind(this), config.system.logWriteInterval);
+        if (!this.#buffers.length) {
+            const timer = setTimeout(this.work.bind(this), config.system.logWriteInterval);
+            timer.unref?.();
+            return timer;
+        }
         const buffer = Buffer.concat(this.#buffers);
         this.#buffers = [];
         this.write(buffer)
-        .finally(() => setTimeout(this.work.bind(this), config.system.logWriteInterval))
+        .finally(() => {
+            const timer = setTimeout(this.work.bind(this), config.system.logWriteInterval);
+            timer.unref?.();
+            return timer;
+        })
         .catch(err => console.error("Log write error:", err));
     }
 
@@ -100,10 +108,13 @@ class Logger {
     config = {};
     /** @type {Object} 日志级别映射 */
     static Level = {
+        Success: "success",
         Info: "info",
+        Log: "log",
         Debug: "debug",
         Warning: "warning",
         Error: "error",
+        Fatal: "fatal",
     };
     /** @type {Object} 日志级别文本颜色樱色 */
     static LevelColor = {

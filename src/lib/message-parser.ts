@@ -68,7 +68,8 @@ function parseMessageContent(content: any): { text: string; images: MessageImage
     text.push(content);
   } else if (_.isArray(content)) {
     // OpenAI格式的多模态内容数组
-    for (const part of content) {
+    for (const rawPart of content) {
+      const part: any = rawPart;
       if ((part.type === 'text' || part.type === 'input_text') && part.text) {
         text.push(part.text);
       } else if ((part.type === 'image_url' || part.type === 'input_image') && part.image_url) {
@@ -86,19 +87,20 @@ function parseMessageContent(content: any): { text: string; images: MessageImage
     }
   } else if (_.isObject(content)) {
     // 可能是单个内容对象
-    if ((content.type === 'text' || content.type === 'input_text') && content.text) {
-      text.push(content.text);
-    } else if ((content.type === 'image_url' || content.type === 'input_image') && content.image_url) {
-      const imageUrl = _.isString(content.image_url) ? content.image_url : content.image_url.url;
+    const item: any = content;
+    if ((item.type === 'text' || item.type === 'input_text') && item.text) {
+      text.push(item.text);
+    } else if ((item.type === 'image_url' || item.type === 'input_image') && item.image_url) {
+      const imageUrl = _.isString(item.image_url) ? item.image_url : item.image_url.url;
       addImage(images, imageUrl);
-    } else if ((content.type === 'input_image' || content.type === 'image') && content.image_base64) {
-      addImage(images, content.image_base64);
-    } else if ((content.type === 'input_image' || content.type === 'image') && content.image_bytes) {
-      addImage(images, content.image_bytes);
-    } else if ((content.type === 'image_url' || content.type === 'image') && content.url) {
-      addImage(images, content.url);
-    } else if (content.b64_json) {
-      addImage(images, content.b64_json);
+    } else if ((item.type === 'input_image' || item.type === 'image') && item.image_base64) {
+      addImage(images, item.image_base64);
+    } else if ((item.type === 'input_image' || item.type === 'image') && item.image_bytes) {
+      addImage(images, item.image_bytes);
+    } else if ((item.type === 'image_url' || item.type === 'image') && item.url) {
+      addImage(images, item.url);
+    } else if (item.b64_json) {
+      addImage(images, item.b64_json);
     }
   }
 
