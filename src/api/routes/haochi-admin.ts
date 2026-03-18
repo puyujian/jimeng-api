@@ -84,6 +84,12 @@ export default [
             status: request.query?.status,
           });
         }),
+      "/accounts/export": async (request: Request) =>
+        requireAdmin(request, async () =>
+          haochiAccountPoolService.exportAccounts({
+            status: request.query?.status,
+          })
+        ),
       "/api-keys": async (request: Request) =>
         requireAdmin(request, async () => ({
           items: haochiAccountPoolService.listApiKeys(),

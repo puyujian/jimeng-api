@@ -636,6 +636,64 @@ test("批量导入支持第三段使用 Sessionid 标记且不误判为代理", 
   assert.equal(token, "jp-session-tag");
 });
 
+test("账号导出会生成可回导文本并跳过缺少密码和 Session 的账号", (t) => {
+  const { tempDir, store } = createTempStore("rotation-export");
+  const { tempDir: importTempDir, store: importStore } = createTempStore("rotation-export-import");
+  const service = new AccountPoolService(store, createMockProvider());
+  const importService = new AccountPoolService(importStore, createMockProvider());
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(importTempDir, { recursive: true, force: true }));
+
+  service.createAccount({
+    email: "export-a@example.com",
+    password: "pass-a",
+    proxy: "http://127.0.0.1:9001",
+    notes: "节点A",
+    sessionId: "jp-session-a",
+  });
+  service.createAccount({
+    email: "export-b@example.com",
+    password: "pass-b",
+  });
+  service.createAccount({
+    email: "export-c@example.com",
+    proxy: "socks5://127.0.0.1:1080",
+    sessionId: "us-session-c",
+  });
+  service.createAccount({
+    email: "export-d@example.com",
+  });
+
+  const exported = service.exportAccounts();
+  assert.equal(exported.matchedCount, 4);
+  assert.equal(exported.exportedCount, 3);
+  assert.equal(exported.skippedCount, 1);
+  assert.match(exported.fileName, /^haochi-accounts-all-\d{8}-\d{6}Z\.txt$/);
+  assert.match(exported.content, /export-a@example\.com----pass-a----http:\/\/127\.0\.0\.1:9001----节点A----Sessionid=jp-session-a/);
+  assert.match(exported.content, /# 跳过 export-d@example\.com: 缺少密码和 SessionID，无法按现有批量导入格式回填/);
+
+  const reimported = importService.importAccounts({
+    text: exported.content,
+    enabled: true,
+    autoRefresh: true,
+    maxConcurrency: 2,
+  });
+
+  assert.equal(reimported.createdCount, 3);
+  assert.equal(reimported.failedCount, 0);
+  const accountA = reimported.items.find((item) => item.email === "export-a@example.com");
+  const accountB = reimported.items.find((item) => item.email === "export-b@example.com");
+  const accountC = reimported.items.find((item) => item.email === "export-c@example.com");
+  assert.equal(accountA?.proxy, "http://127.0.0.1:9001");
+  assert.equal(accountA?.region, "jp");
+  assert.equal(accountA?.status, "healthy");
+  assert.equal(accountB?.proxy, null);
+  assert.equal(accountB?.status, "idle");
+  assert.equal(accountC?.proxy, "socks5://127.0.0.1:1080");
+  assert.equal(accountC?.region, "us");
+  assert.equal(accountC?.status, "healthy");
+});
+
 test("账号更新地区时会重写 sessionid 前缀且不会误清空已有 Session", async (t) => {
   const { tempDir, store } = createTempStore("rotation-region-update");
   const service = new AccountPoolService(store, createMockProvider());

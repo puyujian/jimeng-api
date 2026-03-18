@@ -187,6 +187,7 @@
 ### 5.2 账号池
 
 - `GET /api/admin/accounts`
+- `GET /api/admin/accounts/export`
 - `POST /api/admin/accounts`
 - `POST /api/admin/accounts/batch/update`
 - `POST /api/admin/accounts/batch/delete`
@@ -224,6 +225,14 @@
   - 由 `sessionid/sessionid_ss/sid_tt` 前缀推断
   - `jp-` / `us-` / `hk-` / `sg-` 分别表示日本 / 美国 / 香港 / 新加坡
   - 没有前缀时兼容按中国区处理
+
+账号导出接口：
+
+- `GET /api/admin/accounts/export`
+  - 支持和列表一致的 `status=all|healthy|invalid|blacklisted` 筛选参数；不传时导出全部账号
+  - 返回 `fileName`、`content`、`matchedCount`、`exportedCount`、`skippedCount`
+  - `content` 为可直接回贴到“批量导入账号”的文本；注释行以 `#` 开头，现有导入器会自动忽略
+  - 若某账号同时缺少密码和 SessionID，会在导出文本里写成注释说明，并计入 `skippedCount`
 
 批量导入请求体支持：
 

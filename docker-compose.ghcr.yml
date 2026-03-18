@@ -1,0 +1,36 @@
+services:
+  jimeng-api:
+    image: ghcr.io/puyujian/jimeng-api:latest
+    pull_policy: always
+    container_name: jimeng-haochi
+    # ghcr 镜像默认以非 root 用户运行；Linux 宿主机 bind mount 若未给 1001 写权限会导致 data/logs 落盘失败
+    user: "0:0"
+    restart: unless-stopped
+    ports:
+      - "5100:5100"
+    environment:
+      SERVER_PORT: 5100
+      HAOCHI_STATE_PATH: /app/data/haochi/state.json
+      HAOCHI_LOGIN_PROVIDER: dreamina
+      HAOCHI_LOGIN_HEADLESS: 1
+      # 单代理部署建议先从 1~2 开始，避免同一出口同时堆太多生图任务
+      HAOCHI_PROXY_MAX_CONCURRENCY: 2
+      HAOCHI_ADMIN_USERNAME: admin
+      HAOCHI_ADMIN_PASSWORD: ChangeMe123!
+      HAOCHI_ACCOUNT_SECRET: change-this-secret-at-least-8
+      PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium-browser
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./tmp:/app/tmp
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5100/ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -61,6 +61,7 @@ const refs = {
   loginForm: document.getElementById("login-form"),
   accountForm: document.getElementById("account-form"),
   accountImportForm: document.getElementById("account-import-form"),
+  accountExportButton: document.getElementById("account-export-button"),
   keyForm: document.getElementById("key-form"),
   passwordForm: document.getElementById("password-form"),
   accountsTableBody: document.getElementById("accounts-table-body"),
@@ -158,6 +159,21 @@ async function copyText(value, successMessage = "已复制到剪贴板") {
   }
 
   setNotice(successMessage, "ok");
+}
+
+function downloadTextFile(content, fileName) {
+  const safeName = String(fileName || "").trim() || `haochi-accounts-${Date.now()}.txt`;
+  const blob = new Blob(["\uFEFF", String(content || "")], {
+    type: "text/plain;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = safeName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function setNotice(message, kind = "") {
@@ -1040,6 +1056,27 @@ refs.accountImportForm.addEventListener("submit", async (event) => {
       document.getElementById("account-import-text").value = "";
     }
     await reloadDashboard({ resetAccountPage: true, silent: true, renderKeys: false });
+  } catch (error) {
+    setNotice(error.message, "danger");
+  }
+});
+
+refs.accountExportButton.addEventListener("click", async (event) => {
+  try {
+    const result = await runWithButton(event.currentTarget, "导出中...", async () =>
+      apiFetch("/api/admin/accounts/export")
+    );
+    downloadTextFile(result.content, result.fileName);
+    appendLog("导出账号", {
+      fileName: result.fileName,
+      matchedCount: result.matchedCount,
+      exportedCount: result.exportedCount,
+      skippedCount: result.skippedCount,
+    });
+    setNotice(
+      `账号导出完成：可导入 ${result.exportedCount} 条，跳过 ${result.skippedCount} 条`,
+      result.skippedCount ? "warn" : "ok"
+    );
   } catch (error) {
     setNotice(error.message, "danger");
   }

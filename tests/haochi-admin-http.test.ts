@@ -109,6 +109,9 @@ test("号池管理后台 HTTP 链路可用", { concurrency: false }, async (t) =
   );
   assert.equal(unauthorized.response.status, 401);
 
+  const unauthorizedExport = await httpJson(port, "/api/admin/accounts/export");
+  assert.equal(unauthorizedExport.response.status, 401);
+
   const login = await httpJson(port, "/api/admin/auth/login", {
     method: "POST",
     body: JSON.stringify({ username: "admin", password: "ChangeMe123!" }),
@@ -211,6 +214,10 @@ test("号池管理后台 HTTP 链路可用", { concurrency: false }, async (t) =
   assert.equal(pagedAccounts.payload.page, 1);
   assert.equal(pagedAccounts.payload.pageSize, 2);
   assert.equal(pagedAccounts.payload.totalPages, 2);
+  assert.equal("password" in pagedAccounts.payload.items[0], false);
+  assert.equal("sessionTokens" in pagedAccounts.payload.items[0], false);
+  assert.equal(typeof pagedAccounts.payload.items[0].hasPassword, "boolean");
+  assert.equal(typeof pagedAccounts.payload.items[0].passwordLocked, "boolean");
   assert.deepEqual(
     pagedAccounts.payload.items.map((item: any) => item.email),
     ["batch-a@example.com", "batch-b@example.com"]
@@ -322,6 +329,21 @@ test("号池管理后台 HTTP 链路可用", { concurrency: false }, async (t) =
   assert.equal(batchImportedB.region, "us");
   assert.equal(batchImportedC.proxy, "http://127.0.0.1:9009");
   assert.equal(batchImportedC.region, "us");
+
+  const exportedAccounts = await httpJson(port, "/api/admin/accounts/export", {}, cookie);
+  assert.equal(exportedAccounts.response.status, 200);
+  assert.equal(exportedAccounts.payload.matchedCount, 4);
+  assert.equal(exportedAccounts.payload.exportedCount, 4);
+  assert.equal(exportedAccounts.payload.skippedCount, 0);
+  assert.match(exportedAccounts.payload.fileName, /^haochi-accounts-all-\d{8}-\d{6}Z\.txt$/);
+  assert.match(
+    exportedAccounts.payload.content,
+    /demo@example\.com----password-123----http:\/\/127\.0\.0\.1:9009----jp-account----Sessionid=us-mock-session-[a-z0-9]+/
+  );
+  assert.match(
+    exportedAccounts.payload.content,
+    /batch-c@example\.com----pass-c----http:\/\/127\.0\.0\.1:9009--------Sessionid=us-session-c/
+  );
 
   const createdKey = await httpJson(
     port,

@@ -275,6 +275,34 @@ function parseImportedAccountLine(rawLine: string) {
   };
 }
 
+function sanitizeExportField(value: string | null | undefined) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\n/g, " ")
+    .replace(/----/g, " - - - - ")
+    .trim();
+}
+
+function buildExportAccountLine(account: Pick<PoolAccount, "email" | "password" | "proxy" | "notes" | "sessionTokens">) {
+  const email = sanitizeExportField(account.email);
+  const password = typeof account.password === "string" ? sanitizeExportField(account.password) : "";
+  const proxy = sanitizeExportField(account.proxy);
+  const notes = sanitizeExportField(account.notes);
+  const sessionId = sanitizeExportField(primaryToken(account));
+  if (!password && !sessionId) return null;
+
+  if (sessionId) {
+    return [email, password, proxy, notes, `Sessionid=${sessionId}`].join("----");
+  }
+  if (notes) {
+    return [email, password, proxy, notes].join("----");
+  }
+  if (proxy) {
+    return [email, password, proxy].join("----");
+  }
+  return [email, password].join("----");
+}
+
 function statusPriority(status: AccountStatus) {
   switch (status) {
     case "healthy":
@@ -720,6 +748,55 @@ export default class AccountPoolService {
       total,
       totalPages,
       status: statusFilter,
+    };
+  }
+
+  exportAccounts(options: { status?: any } = {}) {
+    const statusFilter = normalizeAccountListStatusFilter(options.status);
+    const matchedAccounts = this.store
+      .getState()
+      .accounts.filter((item) => matchesAccountStatusFilter(item, statusFilter))
+      .sort((a, b) => a.email.localeCompare(b.email))
+      .map((item) => this.#materializeAccount(item));
+
+    const lines = [
+      `# 好吃号池账号导出`,
+      `# 导出时间: ${nowIso()}`,
+      `# 可直接粘贴到后台“批量导入账号”，注释行会被自动忽略`,
+    ];
+    const skipped: Array<{ email: string; reason: string }> = [];
+    let exportedCount = 0;
+
+    for (const account of matchedAccounts) {
+      const line = buildExportAccountLine(account);
+      if (line) {
+        lines.push(line);
+        exportedCount += 1;
+        continue;
+      }
+      const reason = "缺少密码和 SessionID，无法按现有批量导入格式回填";
+      skipped.push({ email: account.email, reason });
+      lines.push(`# 跳过 ${account.email}: ${reason}`);
+    }
+
+    if (!matchedAccounts.length) {
+      lines.push("# 当前筛选下没有可导出的账号");
+    }
+
+    const fileTimestamp = nowIso()
+      .replace(/\.\d+Z$/, "Z")
+      .replace(/[:]/g, "")
+      .replace(/-/g, "")
+      .replace("T", "-");
+
+    return {
+      status: statusFilter,
+      matchedCount: matchedAccounts.length,
+      exportedCount,
+      skippedCount: skipped.length,
+      skipped,
+      fileName: `haochi-accounts-${statusFilter}-${fileTimestamp}.txt`,
+      content: lines.join("\n"),
     };
   }
 
