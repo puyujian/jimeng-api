@@ -737,7 +737,6 @@ button:disabled {
 
 .mono,
 .inline-secret,
-.secret-box,
 .activity-log {
   font-family: var(--mono);
 }
@@ -778,7 +777,6 @@ button:disabled {
   color: #ffd6d6;
 }
 
-.secret-box,
 .activity-log {
   min-height: 150px;
   padding: 18px;
@@ -885,7 +883,6 @@ button:disabled {
   .signal-summary-card,
   .auth-points article,
   .table-wrap,
-  .secret-box,
   .activity-log {
     border-radius: 20px;
   }

@@ -97,6 +97,15 @@ function detectImportDelimiter(line: string) {
   return null;
 }
 
+function extractTaggedSessionId(value: string) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const matched = raw.match(/^session[\s_-]*id\s*[:=]\s*(.+)$/i);
+  if (!matched) return null;
+  const sessionId = matched[1]?.trim();
+  return sessionId || null;
+}
+
 function parseImportedAccountLine(rawLine: string) {
   const delimiter = detectImportDelimiter(rawLine);
   if (!delimiter) {
@@ -108,8 +117,36 @@ function parseImportedAccountLine(rawLine: string) {
     throw new Error("每行至少需要提供邮箱和密码");
   }
 
-  const [email, password = "", proxy = "", notes = "", sessionId = ""] = parts;
+  const [email, password = "", thirdField = "", fourthField = "", fifthField = ""] = parts;
   if (!email) throw new Error("账号邮箱不能为空");
+  const thirdSessionId = extractTaggedSessionId(thirdField);
+  const fourthSessionId = extractTaggedSessionId(fourthField);
+  const fifthSessionId = extractTaggedSessionId(fifthField);
+
+  let proxy = thirdField;
+  let notes = fourthField;
+  let sessionId = fifthSessionId || fifthField;
+  let hasProxyField = parts.length >= 3;
+  let hasNotesField = parts.length >= 4;
+  let hasSessionField = parts.length >= 5;
+
+  if (thirdSessionId) {
+    proxy = "";
+    notes = "";
+    sessionId = thirdSessionId;
+    hasProxyField = false;
+    hasNotesField = false;
+    hasSessionField = true;
+  } else if (fourthSessionId) {
+    notes = "";
+    sessionId = fourthSessionId;
+    hasNotesField = false;
+    hasSessionField = true;
+  } else if (fifthSessionId) {
+    sessionId = fifthSessionId;
+    hasSessionField = true;
+  }
+
   if (!password && !sessionId) {
     throw new Error("每行至少需要提供密码或 SessionID");
   }
@@ -120,9 +157,9 @@ function parseImportedAccountLine(rawLine: string) {
     proxy,
     notes,
     sessionId,
-    hasProxyField: parts.length >= 3,
-    hasNotesField: parts.length >= 4,
-    hasSessionField: parts.length >= 5,
+    hasProxyField,
+    hasNotesField,
+    hasSessionField,
   };
 }
 

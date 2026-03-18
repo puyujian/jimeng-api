@@ -3,6 +3,7 @@
 import environment from "@/lib/environment.ts";
 import config from "@/lib/config.ts";
 import "@/lib/initialize.ts";
+import "@/lib/outbound-request-log.ts";
 import server from "@/lib/server.ts";
 import routes from "@/api/routes/index.ts";
 import logger from "@/lib/logger.ts";
@@ -26,7 +27,7 @@ const startupTime = performance.now();
 })()
   .then(() =>
     logger.success(
-      `Service startup completed (${Math.floor(performance.now() - startupTime)}ms)`
-    )
+      `Service startup completed (${Math.floor(performance.now() - startupTime)}ms)`,
+    ),
   )
   .catch((err) => console.error(err));

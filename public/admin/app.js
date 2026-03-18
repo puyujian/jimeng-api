@@ -3,7 +3,6 @@ const state = {
   overview: null,
   accountsById: new Map(),
   keysById: new Map(),
-  latestSecret: "",
   clearSessionOnSave: false,
 };
 
@@ -37,7 +36,6 @@ const refs = {
   keysTableBody: document.getElementById("keys-table-body"),
   metricsGrid: document.getElementById("metrics-grid"),
   userSummary: document.getElementById("user-summary"),
-  issuedSecret: document.getElementById("issued-secret"),
   activityLog: document.getElementById("activity-log"),
   providerBadge: document.getElementById("provider-badge"),
   sessionTtlBadge: document.getElementById("session-ttl-badge"),
@@ -479,11 +477,6 @@ async function loadOverview() {
   renderKeys(overview.apiKeys || []);
 }
 
-function setLatestSecret(secret) {
-  state.latestSecret = secret || "";
-  refs.issuedSecret.textContent = state.latestSecret || "暂无新密钥";
-}
-
 async function bootstrap() {
   try {
     const auth = await apiFetch("/api/admin/auth/me");
@@ -604,14 +597,14 @@ refs.keyForm.addEventListener("submit", async (event) => {
     );
 
     if (result?.rawKey) {
-      setLatestSecret(result.rawKey);
       appendLog("创建 API Key", result.apiKey);
     } else {
       appendLog("更新 API Key", result.item);
     }
-    setNotice(keyId ? "API Key 已更新" : "API Key 已创建", "ok");
+    setNotice(keyId ? "API Key 已更新" : "API Key 已创建，完整密钥请直接在列表中复制", "ok");
     resetKeyForm();
     await loadOverview();
+    revealElement(refs.keysTableBody);
   } catch (error) {
     setNotice(error.message, "danger");
   }
@@ -680,16 +673,6 @@ document.getElementById("clear-account-session").addEventListener("click", () =>
   document.getElementById("account-session-id").value = "";
   state.clearSessionOnSave = true;
   setNotice("已标记为清空 Session，保存后生效", "warn");
-});
-
-document.getElementById("copy-secret").addEventListener("click", async (event) => {
-  try {
-    await runWithButton(event.currentTarget, "复制中...", async () => {
-      await copyText(state.latestSecret, "已复制最近签发的 API Key");
-    });
-  } catch (error) {
-    setNotice(error.message, "danger");
-  }
 });
 
 refs.accountsTableBody.addEventListener("click", async (event) => {
@@ -794,10 +777,10 @@ refs.keysTableBody.addEventListener("click", async (event) => {
       const result = await runWithButton(button, "重置中...", async () =>
         apiFetch(`/api/admin/api-keys/${id}/rotate`, { method: "POST" })
       );
-      setLatestSecret(result.rawKey);
       appendLog(`重置 API Key ${item.name}`, result.apiKey);
-      setNotice(`API Key ${item.name} 已重置`, "warn");
+      setNotice(`API Key ${item.name} 已重置，完整密钥请直接在列表中复制`, "warn");
       await loadOverview();
+      revealElement(refs.keysTableBody);
       return;
     }
 
