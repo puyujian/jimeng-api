@@ -84,6 +84,8 @@ export default [
         requireAdmin(request, async () => ({
           item: haochiAccountPoolService.createAccount(request.body),
         })),
+      "/accounts/import": async (request: Request) =>
+        requireAdmin(request, async () => haochiAccountPoolService.importAccounts(request.body)),
       "/accounts/:id/refresh-session": async (request: Request) =>
         requireAdmin(request, async () => haochiAccountPoolService.refreshAccountSession(request.params.id)),
       "/accounts/:id/validate-session": async (request: Request) =>

@@ -195,10 +195,18 @@ docker compose up -d --build
 - 用户名：`admin`
 - 密码：`ChangeMe123!`
 
+如果直接使用仓库里的 `docker-compose.yml`，示例环境变量也使用这组默认值。
+
 首次登录后应立即修改：
 
 - 后台右侧“管理员密码”表单
 - 或在部署时通过环境变量覆盖
+
+注意：
+
+- `HAOCHI_ADMIN_USERNAME` / `HAOCHI_ADMIN_PASSWORD` 只会在 `admins` 为空时初始化一次
+- 如果 `data/haochi/state.json` 已存在，容器重启或改环境变量不会覆盖旧密码
+- Docker 挂载了旧数据卷时，请优先使用历史密码登录，或在确认影响范围后删除状态文件重新初始化
 
 ### 6.3 关键环境变量
 

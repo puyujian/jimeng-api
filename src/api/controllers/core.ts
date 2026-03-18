@@ -654,6 +654,12 @@ export function tokenSplit(authorization: string) {
  */
 export async function getTokenLiveStatus(refreshToken: string) {
   try {
+    const regionInfo = parseRegionFromToken(refreshToken);
+    if (regionInfo.isInternational) {
+      const credit = await getCredit(refreshToken);
+      return _.isFinite(Number(credit?.totalCredit));
+    }
+
     const result = await request(
       "POST",
       "/passport/account/info/v2",

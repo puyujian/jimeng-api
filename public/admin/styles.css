@@ -151,6 +151,14 @@ body {
   margin-bottom: 20px;
 }
 
+.subpanel {
+  margin-bottom: 20px;
+  padding: 18px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.48);
+  border: 1px dashed rgba(21, 36, 31, 0.12);
+}
+
 .grid-form label,
 .ability-group {
   display: grid;
@@ -208,6 +216,12 @@ button {
 
 button:hover {
   transform: translateY(-1px);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .primary-btn {
@@ -286,6 +300,10 @@ button:hover {
   gap: 8px;
 }
 
+.helper-copy {
+  margin: 0;
+}
+
 .pill {
   display: inline-flex;
   align-items: center;
@@ -324,6 +342,12 @@ button:hover {
   font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
 }
 
+.inline-secret {
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.88rem;
+  word-break: break-all;
+}
+
 .notice {
   margin-bottom: 18px;
   padding: 14px 18px;
@@ -331,6 +355,24 @@ button:hover {
   background: rgba(36, 91, 86, 0.12);
   color: var(--teal);
   border: 1px solid rgba(36, 91, 86, 0.18);
+}
+
+.notice[data-kind="danger"] {
+  background: rgba(178, 54, 44, 0.12);
+  color: var(--danger);
+  border-color: rgba(178, 54, 44, 0.2);
+}
+
+.notice[data-kind="warn"] {
+  background: rgba(183, 108, 17, 0.12);
+  color: var(--warn);
+  border-color: rgba(183, 108, 17, 0.2);
+}
+
+.notice[data-kind="ok"] {
+  background: rgba(29, 127, 85, 0.12);
+  color: var(--ok);
+  border-color: rgba(29, 127, 85, 0.2);
 }
 
 @media (max-width: 1080px) {

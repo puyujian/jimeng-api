@@ -145,6 +145,32 @@ test("号池管理后台 HTTP 链路可用", { concurrency: false }, async (t) =
   assert.equal(validated.response.status, 200);
   assert.equal(validated.payload.valid, true);
 
+  const importedAccounts = await httpJson(
+    port,
+    "/api/admin/accounts/import",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        text: [
+          "batch-a@example.com----pass-a----http://127.0.0.1:9001----节点A",
+          "batch-b@example.com----pass-b",
+        ].join("\n"),
+        defaultProxy: "socks5://127.0.0.1:1080",
+        maxConcurrency: 4,
+        enabled: true,
+        autoRefresh: false,
+      }),
+    },
+    cookie
+  );
+  assert.equal(importedAccounts.response.status, 200);
+  assert.equal(importedAccounts.payload.createdCount, 2);
+  assert.equal(importedAccounts.payload.failedCount, 0);
+  const importedA = importedAccounts.payload.items.find((item: any) => item.email === "batch-a@example.com");
+  const importedB = importedAccounts.payload.items.find((item: any) => item.email === "batch-b@example.com");
+  assert.equal(importedA.proxy, "http://127.0.0.1:9001");
+  assert.equal(importedB.proxy, "socks5://127.0.0.1:1080");
+
   const createdKey = await httpJson(
     port,
     "/api/admin/api-keys",
@@ -153,13 +179,14 @@ test("号池管理后台 HTTP 链路可用", { concurrency: false }, async (t) =
       body: JSON.stringify({
         name: "integration-client",
         description: "test",
-        allowedAbilities: ["images", "chat"],
+        allowedAbilities: ["images", "chat", "token"],
       }),
     },
     cookie
   );
   assert.equal(createdKey.response.status, 200);
   assert.match(createdKey.payload.rawKey, /^haochi_/);
+  assert.equal(createdKey.payload.apiKey.rawKey, createdKey.payload.rawKey);
   const apiKeyId = createdKey.payload.apiKey.id;
 
   const rotatedKey = await httpJson(
@@ -171,10 +198,25 @@ test("号池管理后台 HTTP 链路可用", { concurrency: false }, async (t) =
   assert.equal(rotatedKey.response.status, 200);
   assert.notEqual(rotatedKey.payload.rawKey, createdKey.payload.rawKey);
 
+  const oldKeyPoints = await httpJson(port, "/token/points", {
+    method: "POST",
+    body: JSON.stringify({}),
+    headers: {
+      "X-API-Key": createdKey.payload.rawKey,
+    },
+  });
+  assert.equal(oldKeyPoints.response.status, 401);
+  assert.equal(oldKeyPoints.payload.message, "API Key 无效或已失效");
+
+  const listedKeys = await httpJson(port, "/api/admin/api-keys", {}, cookie);
+  assert.equal(listedKeys.response.status, 200);
+  assert.equal(listedKeys.payload.items[0].rawKey, rotatedKey.payload.rawKey);
+
   const overview = await httpJson(port, "/api/admin/overview", {}, cookie);
   assert.equal(overview.response.status, 200);
-  assert.equal(overview.payload.counts.accounts, 1);
+  assert.equal(overview.payload.counts.accounts, 3);
   assert.equal(overview.payload.counts.apiKeys, 1);
+  assert.equal(overview.payload.apiKeys[0].rawKey, rotatedKey.payload.rawKey);
 
   const deletedKey = await httpJson(
     port,
@@ -183,6 +225,16 @@ test("号池管理后台 HTTP 链路可用", { concurrency: false }, async (t) =
     cookie
   );
   assert.equal(deletedKey.response.status, 200);
+
+  const deletedKeyPoints = await httpJson(port, "/token/points", {
+    method: "POST",
+    body: JSON.stringify({}),
+    headers: {
+      "X-API-Key": rotatedKey.payload.rawKey,
+    },
+  });
+  assert.equal(deletedKeyPoints.response.status, 401);
+  assert.equal(deletedKeyPoints.payload.message, "API Key 无效或已失效");
 
   const deletedAccount = await httpJson(
     port,

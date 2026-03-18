@@ -37,6 +37,7 @@ export default class AdminAuthService {
   readonly defaultPassword = String(process.env.HAOCHI_ADMIN_PASSWORD || "ChangeMe123!");
   readonly store: HaochiStateStore;
   readonly sessions = new Map<string, AdminSession>();
+  #bootstrapStateLogged = false;
 
   constructor(store: HaochiStateStore) {
     this.store = store;
@@ -44,7 +45,16 @@ export default class AdminAuthService {
 
   ensureBootstrapAdmin() {
     const state = this.store.getState();
-    if (state.admins.length > 0) return;
+    if (state.admins.length > 0) {
+      if (!this.#bootstrapStateLogged && (process.env.HAOCHI_ADMIN_USERNAME || process.env.HAOCHI_ADMIN_PASSWORD)) {
+        const adminNames = state.admins.map((item) => item.username).filter(Boolean).join(", ") || "unknown";
+        logger.info(
+          `检测到已有管理员状态(${adminNames})，将继续使用 ${this.store.filePath} 中的密码哈希，跳过 HAOCHI_ADMIN_USERNAME/HAOCHI_ADMIN_PASSWORD 初始化`
+        );
+        this.#bootstrapStateLogged = true;
+      }
+      return;
+    }
 
     const now = nowIso();
     state.admins.push({
@@ -65,6 +75,7 @@ export default class AdminAuthService {
     } else {
       logger.info(`已初始化管理员账号: ${this.defaultUsername}`);
     }
+    this.#bootstrapStateLogged = true;
   }
 
   #getAdminByUsername(username: string) {

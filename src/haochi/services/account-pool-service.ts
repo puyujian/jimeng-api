@@ -30,6 +30,11 @@ import {
   randomToken,
   verifySecret,
 } from "@/haochi/utils/crypto.ts";
+import {
+  attachProxyToToken,
+  maskProxyUrl,
+  normalizeProxyUrl,
+} from "@/haochi/utils/proxy.ts";
 
 function createHttpError(message: string, statusCode = 400) {
   return new Exception(SYSTEM_EX.SYSTEM_REQUEST_VALIDATION_ERROR, message).setHTTPStatusCode(statusCode);
@@ -82,6 +87,42 @@ function sanitizeSessionTokens(input: Partial<AccountSessionTokens> | null | und
     passport_csrf_token_default: next.passport_csrf_token_default || null,
     s_v_web_id: next.s_v_web_id || null,
     _tea_web_id: next._tea_web_id || null,
+  };
+}
+
+function detectImportDelimiter(line: string) {
+  for (const delimiter of ["----", "\t", "|", ","]) {
+    if (line.includes(delimiter)) return delimiter;
+  }
+  return null;
+}
+
+function parseImportedAccountLine(rawLine: string) {
+  const delimiter = detectImportDelimiter(rawLine);
+  if (!delimiter) {
+    throw new Error("无法识别导入分隔符，请使用 ----、制表符、竖线或逗号");
+  }
+
+  const parts = rawLine.split(delimiter).map((item) => item.trim());
+  if (parts.length < 2) {
+    throw new Error("每行至少需要提供邮箱和密码");
+  }
+
+  const [email, password = "", proxy = "", notes = "", sessionId = ""] = parts;
+  if (!email) throw new Error("账号邮箱不能为空");
+  if (!password && !sessionId) {
+    throw new Error("每行至少需要提供密码或 SessionID");
+  }
+
+  return {
+    email,
+    password,
+    proxy,
+    notes,
+    sessionId,
+    hasProxyField: parts.length >= 3,
+    hasNotesField: parts.length >= 4,
+    hasSessionField: parts.length >= 5,
   };
 }
 
@@ -158,8 +199,30 @@ export default class AccountPoolService {
     return null;
   }
 
+  #resolveStoredApiKeyValue(secretValue: ApiKeyRecord["secretValue"]) {
+    if (!secretValue) return null;
+    if (typeof secretValue === "string") return secretValue;
+    if (isEncryptedPayload(secretValue) && isEncryptionEnabled(this.store.encryptionSecret)) {
+      try {
+        return decryptString(secretValue as EncryptedPayload, this.store.encryptionSecret);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
   #storePassword(password: string | null | undefined) {
     const raw = String(password || "").trim();
+    if (!raw) return null;
+    if (isEncryptionEnabled(this.store.encryptionSecret)) {
+      return encryptString(raw, this.store.encryptionSecret);
+    }
+    return raw;
+  }
+
+  #storeApiKeyValue(secretValue: string | null | undefined) {
+    const raw = String(secretValue || "").trim();
     if (!raw) return null;
     if (isEncryptionEnabled(this.store.encryptionSecret)) {
       return encryptString(raw, this.store.encryptionSecret);
@@ -173,6 +236,8 @@ export default class AccountPoolService {
     return {
       id: account.id,
       email: account.email,
+      proxy: normalizeProxyUrl(account.proxy),
+      proxyPreview: maskProxyUrl(account.proxy) || null,
       enabled: account.enabled,
       autoRefresh: account.autoRefresh,
       maxConcurrency: account.maxConcurrency,
@@ -201,12 +266,17 @@ export default class AccountPoolService {
   }
 
   #publicApiKey(record: ApiKeyRecord) {
+    const rawKey = this.#resolveStoredApiKeyValue(record.secretValue);
+    const rawKeyLocked =
+      isEncryptedPayload(record.secretValue) && !isEncryptionEnabled(this.store.encryptionSecret);
     return {
       id: record.id,
       name: record.name,
       description: record.description,
       enabled: record.enabled,
       allowedAbilities: record.allowedAbilities,
+      rawKey,
+      rawKeyLocked,
       keyPreview: record.keyPreview,
       lastUsedAt: record.lastUsedAt,
       createdAt: record.createdAt,
@@ -218,8 +288,13 @@ export default class AccountPoolService {
     return {
       ...account,
       password: this.#resolveStoredPassword(account.password),
+      proxy: normalizeProxyUrl(account.proxy),
       sessionTokens: sanitizeSessionTokens(account.sessionTokens),
     };
+  }
+
+  #buildRequestToken(account: PoolAccount) {
+    return attachProxyToToken(primaryToken(account), account.proxy);
   }
 
   #requireAccount(accountId: string) {
@@ -355,6 +430,108 @@ export default class AccountPoolService {
     };
   }
 
+  importAccounts(payload: any) {
+    const text = String(payload?.text || "").replace(/\r\n/g, "\n");
+    if (!text.trim()) throw createHttpError("批量导入内容不能为空", 400);
+
+    const overwriteExisting = parseBoolean(payload?.overwriteExisting, true);
+    const defaultProxy =
+      payload?.defaultProxy !== undefined || payload?.proxy !== undefined
+        ? normalizeProxyUrl(payload?.defaultProxy ?? payload?.proxy)
+        : null;
+    const defaultEnabled = parseBoolean(payload?.enabled, true);
+    const defaultAutoRefresh = parseBoolean(payload?.autoRefresh, true);
+    const defaultMaxConcurrency = clampNumber(
+      payload?.maxConcurrency,
+      1,
+      20,
+      this.settings.defaultAccountMaxConcurrency
+    );
+
+    const items: ReturnType<AccountPoolService["listAccounts"]> = [];
+    const errors: Array<{ line: number; raw: string; error: string }> = [];
+    let createdCount = 0;
+    let updatedCount = 0;
+    let skippedCount = 0;
+
+    const lines = text
+      .split("\n")
+      .map((raw, index) => ({
+        line: index + 1,
+        raw,
+        trimmed: raw.trim(),
+      }))
+      .filter((item) => item.trimmed && !item.trimmed.startsWith("#") && !item.trimmed.startsWith("//"));
+
+    if (!lines.length) throw createHttpError("批量导入内容不能为空", 400);
+
+    for (const entry of lines) {
+      try {
+        const parsed = parseImportedAccountLine(entry.trimmed);
+        const existing = this.store
+          .getState()
+          .accounts.find((item) => item.email.toLowerCase() === parsed.email.toLowerCase());
+        const proxyValue = parsed.hasProxyField ? parsed.proxy : defaultProxy;
+
+        if (existing) {
+          if (!overwriteExisting) {
+            skippedCount += 1;
+            errors.push({
+              line: entry.line,
+              raw: entry.raw,
+              error: "账号已存在，已跳过",
+            });
+            continue;
+          }
+
+          const nextPayload: Record<string, any> = {
+            email: parsed.email,
+            enabled: defaultEnabled,
+            autoRefresh: defaultAutoRefresh,
+            maxConcurrency: defaultMaxConcurrency,
+          };
+          if (parsed.password) nextPayload.password = parsed.password;
+          if (parsed.hasProxyField || defaultProxy !== null) nextPayload.proxy = proxyValue;
+          if (parsed.hasNotesField) nextPayload.notes = parsed.notes;
+          if (parsed.hasSessionField && parsed.sessionId) nextPayload.sessionId = parsed.sessionId;
+          items.push(this.updateAccount(existing.id, nextPayload));
+          updatedCount += 1;
+          continue;
+        }
+
+        items.push(
+          this.createAccount({
+            email: parsed.email,
+            password: parsed.password,
+            sessionId: parsed.sessionId,
+            proxy: proxyValue,
+            notes: parsed.notes,
+            enabled: defaultEnabled,
+            autoRefresh: defaultAutoRefresh,
+            maxConcurrency: defaultMaxConcurrency,
+          })
+        );
+        createdCount += 1;
+      } catch (error: any) {
+        errors.push({
+          line: entry.line,
+          raw: entry.raw,
+          error: error?.message || String(error),
+        });
+      }
+    }
+
+    return {
+      totalLines: lines.length,
+      createdCount,
+      updatedCount,
+      skippedCount,
+      failedCount: errors.length,
+      items,
+      errors,
+    };
+  }
+
   createAccount(payload: any) {
     const email = String(payload?.email || "").trim();
     if (!email) throw createHttpError("账号邮箱不能为空", 400);
@@ -370,6 +547,7 @@ export default class AccountPoolService {
       id: randomId("account"),
       email,
       password: this.#storePassword(payload?.password),
+      proxy: normalizeProxyUrl(payload?.proxy),
       enabled,
       autoRefresh: parseBoolean(payload?.autoRefresh, true),
       maxConcurrency: clampNumber(
@@ -424,6 +602,9 @@ export default class AccountPoolService {
       if (!account) return;
 
       account.email = nextEmail;
+      if (payload?.proxy !== undefined) {
+        account.proxy = normalizeProxyUrl(payload.proxy);
+      }
       account.enabled =
         payload?.enabled === undefined ? account.enabled : parseBoolean(payload.enabled, account.enabled);
       account.autoRefresh =
@@ -544,8 +725,8 @@ export default class AccountPoolService {
   }
 
   async validateAccountSession(accountId: string) {
-    const account = this.#requireAccount(accountId);
-    const token = primaryToken(account);
+    const account = this.#materializeAccount(this.#requireAccount(accountId));
+    const token = this.#buildRequestToken(account);
     if (!token) {
       this.store.update((state) => {
         const target = state.accounts.find((item) => item.id === accountId);
@@ -565,7 +746,7 @@ export default class AccountPoolService {
     let valid = false;
     let reason = "Session 校验通过";
     if (this.loginProvider.name === "mock") {
-      valid = token.startsWith("mock-session-");
+      valid = String(primaryToken(account) || "").startsWith("mock-session-");
       if (!valid) reason = "Mock Session 不合法";
     } else {
       try {
@@ -641,6 +822,7 @@ export default class AccountPoolService {
       enabled: parseBoolean(payload?.enabled, true),
       allowedAbilities: normalizeAllowedAbilities(payload?.allowedAbilities),
       secretHash: createSecretHash(rawKey),
+      secretValue: this.#storeApiKeyValue(rawKey),
       keyPreview: `${rawKey.slice(0, 10)}...${rawKey.slice(-6)}`,
       lastUsedAt: null,
       createdAt: now,
@@ -678,6 +860,7 @@ export default class AccountPoolService {
       const target = state.apiKeys.find((item) => item.id === apiKeyId);
       if (!target) return;
       target.secretHash = createSecretHash(rawKey);
+      target.secretValue = this.#storeApiKeyValue(rawKey);
       target.keyPreview = `${rawKey.slice(0, 10)}...${rawKey.slice(-6)}`;
       target.updatedAt = nowIso();
     });
@@ -703,25 +886,40 @@ export default class AccountPoolService {
   }
 
   isManagedApiKeyRequest(headers: Record<string, any>) {
-    return !!this.#resolveManagedApiKey(headers);
+    return !!this.#extractManagedApiKeyCandidate(headers);
   }
 
   #resolveManagedApiKey(headers: Record<string, any>) {
-    const xApiKey = String(headers?.["x-api-key"] || "").trim();
-    const authHeader = String(headers?.authorization || "").trim();
-    let rawKey = xApiKey;
-
-    if (!rawKey && authHeader.toLowerCase().startsWith("bearer ")) {
-      const bearerValue = authHeader.slice(7).trim();
-      if (bearerValue && !bearerValue.includes(",")) rawKey = bearerValue;
-    }
-
+    const rawKey = this.#extractManagedApiKeyCandidate(headers);
     if (!rawKey) return null;
 
     const apiKey = this.store
       .getState()
       .apiKeys.find((item) => item.enabled && verifySecret(rawKey, item.secretHash));
-    return apiKey || null;
+    if (!apiKey) return null;
+
+    const storedRawKey = this.#resolveStoredApiKeyValue(apiKey.secretValue);
+    if (storedRawKey !== rawKey) {
+      this.store.update((state) => {
+        const target = state.apiKeys.find((item) => item.id === apiKey.id);
+        if (!target) return;
+        target.secretValue = this.#storeApiKeyValue(rawKey);
+      });
+      return this.#requireApiKey(apiKey.id);
+    }
+
+    return apiKey;
+  }
+
+  #extractManagedApiKeyCandidate(headers: Record<string, any>) {
+    const xApiKey = String(headers?.["x-api-key"] || "").trim();
+    if (xApiKey) return xApiKey;
+
+    const authHeader = String(headers?.authorization || "").trim();
+    if (!authHeader.toLowerCase().startsWith("bearer ")) return null;
+    const bearerValue = authHeader.slice(7).trim();
+    if (!bearerValue || bearerValue.includes(",")) return null;
+    return bearerValue.startsWith("haochi_") ? bearerValue : null;
   }
 
   #pickLegacyToken(authorizationHeader: string) {
@@ -830,7 +1028,11 @@ export default class AccountPoolService {
     ability: PoolAbility,
     handler: (token: string, context: { mode: "legacy" | "pool"; accountId?: string; apiKeyId?: string }) => Promise<T>
   ): Promise<T> {
+    const managedApiKeyAttempt = this.isManagedApiKeyRequest(request.headers);
     const managedApiKey = this.#resolveManagedApiKey(request.headers);
+    if (managedApiKeyAttempt && !managedApiKey) {
+      throw createHttpError("API Key 无效或已失效", 401);
+    }
     if (!managedApiKey) {
       const authorization = String(request.headers?.authorization || "").trim();
       if (!authorization) throw createHttpError("缺少 Authorization 或 X-API-Key", 401);
@@ -854,7 +1056,7 @@ export default class AccountPoolService {
       const selected = await this.#selectManagedAccount(ability, triedIds);
       if (!selected) break;
 
-      const token = primaryToken(selected.account);
+      const token = this.#buildRequestToken(selected.account);
       if (!token) {
         selected.lease.release();
         triedIds.add(selected.account.id);

@@ -13,6 +13,7 @@ const refs = {
   notice: document.getElementById("notice-banner"),
   loginForm: document.getElementById("login-form"),
   accountForm: document.getElementById("account-form"),
+  accountImportForm: document.getElementById("account-import-form"),
   keyForm: document.getElementById("key-form"),
   passwordForm: document.getElementById("password-form"),
   accountsTableBody: document.getElementById("accounts-table-body"),
@@ -22,6 +23,27 @@ const refs = {
   issuedSecret: document.getElementById("issued-secret"),
   activityLog: document.getElementById("activity-log"),
 };
+
+async function copyText(value, successMessage = "已复制到剪贴板") {
+  const text = String(value || "").trim();
+  if (!text) throw new Error("没有可复制的内容");
+
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+  } else {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "absolute";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+  }
+
+  setNotice(successMessage, "ok");
+}
 
 function setNotice(message, kind = "info") {
   if (!message) {
@@ -127,6 +149,7 @@ function resetAccountForm() {
   document.getElementById("account-email").value = "";
   document.getElementById("account-password").value = "";
   document.getElementById("account-session-id").value = "";
+  document.getElementById("account-proxy").value = "";
   document.getElementById("account-max-concurrency").value = "2";
   document.getElementById("account-enabled").checked = true;
   document.getElementById("account-auto-refresh").checked = true;
@@ -139,6 +162,7 @@ function fillAccountForm(item) {
   document.getElementById("account-email").value = item.email || "";
   document.getElementById("account-password").value = "";
   document.getElementById("account-session-id").value = "";
+  document.getElementById("account-proxy").value = item.proxy || "";
   document.getElementById("account-max-concurrency").value = String(item.maxConcurrency || 2);
   document.getElementById("account-enabled").checked = !!item.enabled;
   document.getElementById("account-auto-refresh").checked = !!item.autoRefresh;
@@ -202,6 +226,7 @@ function renderAccounts(accounts) {
           <td>
             <strong>${escapeHtml(item.email)}</strong>
             <div class="muted">${escapeHtml(item.notes || "无备注")}</div>
+            <div class="muted">${escapeHtml(item.proxyPreview ? `代理: ${item.proxyPreview}` : "代理: 直连")}</div>
           </td>
           <td>
             <div>${escapeHtml(item.sessionIdPreview || "—")}</div>
@@ -244,11 +269,22 @@ function renderKeys(keys) {
             <strong>${escapeHtml(item.name)}</strong>
             <div class="muted">${escapeHtml(item.description || "无描述")}</div>
           </td>
-          <td>${escapeHtml(item.keyPreview)}</td>
+          <td>
+            <div class="inline-secret">${escapeHtml(
+              item.rawKey ||
+                (item.rawKeyLocked ? "当前实例无法解密该密钥" : "旧密钥尚未保存原文，请先使用或重置")
+            )}</div>
+            <div class="muted">${escapeHtml(item.keyPreview)}</div>
+          </td>
           <td>${abilityLabels(item.allowedAbilities)}</td>
           <td>${escapeHtml(formatTime(item.lastUsedAt))}</td>
           <td>
             <div class="table-actions">
+              ${
+                item.rawKey
+                  ? `<button class="ghost-btn" data-action="copy-key" data-id="${escapeHtml(item.id)}">复制</button>`
+                  : ""
+              }
               <button class="ghost-btn" data-action="edit-key" data-id="${escapeHtml(item.id)}">编辑</button>
               <button class="ghost-btn" data-action="rotate-key" data-id="${escapeHtml(item.id)}">重置</button>
               <button class="ghost-btn" data-action="delete-key" data-id="${escapeHtml(item.id)}">删除</button>
@@ -312,6 +348,7 @@ refs.accountForm.addEventListener("submit", async (event) => {
     email: document.getElementById("account-email").value.trim(),
     password: document.getElementById("account-password").value,
     sessionId: document.getElementById("account-session-id").value.trim(),
+    proxy: document.getElementById("account-proxy").value.trim(),
     maxConcurrency: Number(document.getElementById("account-max-concurrency").value || 2),
     enabled: document.getElementById("account-enabled").checked,
     autoRefresh: document.getElementById("account-auto-refresh").checked,
@@ -327,6 +364,36 @@ refs.accountForm.addEventListener("submit", async (event) => {
     setNotice(accountId ? "账号已更新" : "账号已创建");
     appendLog(accountId ? "更新账号" : "创建账号", payload);
     resetAccountForm();
+    await loadOverview();
+  } catch (error) {
+    setNotice(error.message, "danger");
+  }
+});
+
+refs.accountImportForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const payload = {
+    text: document.getElementById("account-import-text").value,
+    defaultProxy: document.getElementById("account-import-default-proxy").value.trim(),
+    maxConcurrency: Number(document.getElementById("account-import-max-concurrency").value || 2),
+    enabled: document.getElementById("account-import-enabled").checked,
+    autoRefresh: document.getElementById("account-import-auto-refresh").checked,
+    overwriteExisting: document.getElementById("account-import-overwrite").checked,
+  };
+
+  try {
+    const result = await apiFetch("/api/admin/accounts/import", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    appendLog("批量导入账号", result);
+    setNotice(
+      `批量导入完成：新增 ${result.createdCount}，更新 ${result.updatedCount}，跳过 ${result.skippedCount}，失败 ${result.failedCount}`,
+      result.failedCount ? "warn" : "ok"
+    );
+    if (!result.failedCount) {
+      document.getElementById("account-import-text").value = "";
+    }
     await loadOverview();
   } catch (error) {
     setNotice(error.message, "danger");
@@ -407,9 +474,11 @@ document.getElementById("clear-account-session").addEventListener("click", () =>
 });
 
 document.getElementById("copy-secret").addEventListener("click", async () => {
-  if (!state.latestSecret) return;
-  await navigator.clipboard.writeText(state.latestSecret);
-  setNotice("已复制最新 API Key");
+  try {
+    await copyText(state.latestSecret, "已复制最近签发的 API Key");
+  } catch (error) {
+    setNotice(error.message, "danger");
+  }
 });
 
 refs.accountsTableBody.addEventListener("click", async (event) => {
@@ -484,6 +553,11 @@ refs.keysTableBody.addEventListener("click", async (event) => {
   if (!item) return;
 
   try {
+    if (action === "copy-key") {
+      await copyText(item.rawKey, `已复制 API Key ${item.name}`);
+      return;
+    }
+
     if (action === "edit-key") {
       fillKeyForm(item);
       setNotice(`正在编辑 API Key ${item.name}`);

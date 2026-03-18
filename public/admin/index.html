@@ -24,6 +24,8 @@
         </div>
       </section>
 
+      <div id="notice-banner" class="notice" hidden></div>
+
       <section id="login-view" class="card auth-card">
         <div class="section-head">
           <div>
@@ -56,8 +58,6 @@
             <button id="logout-btn" class="ghost-btn" type="button">退出登录</button>
           </div>
         </div>
-
-        <div id="notice-banner" class="notice" hidden></div>
 
         <section class="card">
           <div class="section-head">
@@ -93,6 +93,10 @@
                 <input id="account-session-id" placeholder="可选，适合先导入已有 session" />
               </label>
               <label>
+                <span>代理</span>
+                <input id="account-proxy" placeholder="可选，例如 http://127.0.0.1:7890 或 socks5://host:port" />
+              </label>
+              <label>
                 <span>并发上限</span>
                 <input id="account-max-concurrency" type="number" min="1" max="20" value="2" />
               </label>
@@ -113,6 +117,50 @@
                 <button id="clear-account-session" class="ghost-btn" type="button">清空 Session</button>
               </div>
             </form>
+            <section class="subpanel">
+              <div class="section-head">
+                <div>
+                  <p class="section-kicker">Batch Import</p>
+                  <h3>批量导入账号</h3>
+                </div>
+              </div>
+              <form id="account-import-form" class="grid-form compact-form">
+                <label class="full-span">
+                  <span>导入内容</span>
+                  <textarea
+                    id="account-import-text"
+                    rows="6"
+                    placeholder="每行支持：邮箱----密码----代理(可选)----备注(可选)----SessionID(可选)"
+                  ></textarea>
+                </label>
+                <label>
+                  <span>默认代理</span>
+                  <input id="account-import-default-proxy" placeholder="整批默认代理，可空" />
+                </label>
+                <label>
+                  <span>默认并发上限</span>
+                  <input id="account-import-max-concurrency" type="number" min="1" max="20" value="2" />
+                </label>
+                <label class="checkbox-field">
+                  <input id="account-import-enabled" type="checkbox" checked />
+                  <span>导入后启用</span>
+                </label>
+                <label class="checkbox-field">
+                  <input id="account-import-auto-refresh" type="checkbox" checked />
+                  <span>允许自动续期</span>
+                </label>
+                <label class="checkbox-field full-span">
+                  <input id="account-import-overwrite" type="checkbox" checked />
+                  <span>同邮箱已存在时覆盖更新</span>
+                </label>
+                <p class="muted full-span helper-copy">
+                  行内代理优先级高于默认代理。保存后，代理会同时参与 Dreamina 登录和业务调用。
+                </p>
+                <div class="form-actions full-span">
+                  <button class="primary-btn" type="submit">开始批量导入</button>
+                </div>
+              </form>
+            </section>
             <div class="table-wrap">
               <table class="data-table">
                 <thead>
@@ -167,12 +215,12 @@
               <div class="table-wrap">
                 <table class="data-table">
                   <thead>
-                    <tr>
-                      <th>名称</th>
-                      <th>预览</th>
-                      <th>能力</th>
-                      <th>最近使用</th>
-                      <th>操作</th>
+                  <tr>
+                    <th>名称</th>
+                    <th>完整密钥</th>
+                    <th>能力</th>
+                    <th>最近使用</th>
+                    <th>操作</th>
                     </tr>
                   </thead>
                   <tbody id="keys-table-body"></tbody>
@@ -206,11 +254,11 @@
               <div class="section-head">
                 <div>
                   <p class="section-kicker">Issued Secret</p>
-                  <h3>新密钥回显</h3>
+                  <h3>最近签发密钥</h3>
                 </div>
               </div>
               <p class="muted">
-                API Key 只会在创建或重置时回显一次。请立即复制给外部调用方。
+                下方表格中的 API Key 现在支持常显和复制；这里保留最近一次创建或重置结果。
               </p>
               <pre id="issued-secret" class="secret-box">暂无新密钥</pre>
               <button id="copy-secret" class="ghost-btn" type="button">复制到剪贴板</button>

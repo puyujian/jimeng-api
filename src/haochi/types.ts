@@ -55,6 +55,7 @@ export interface PoolAccount {
   id: string;
   email: string;
   password: string | EncryptedPayload | null;
+  proxy: string | null;
   enabled: boolean;
   autoRefresh: boolean;
   maxConcurrency: number;
@@ -85,6 +86,7 @@ export interface ApiKeyRecord {
   enabled: boolean;
   allowedAbilities: PoolAbility[];
   secretHash: SecretHashPayload;
+  secretValue?: string | EncryptedPayload | null;
   keyPreview: string;
   lastUsedAt: string | null;
   createdAt: string;

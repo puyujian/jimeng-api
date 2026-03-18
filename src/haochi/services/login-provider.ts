@@ -11,6 +11,7 @@ import type {
   PoolAccount,
 } from "@/haochi/types.ts";
 import { maskSecret, nowIso, randomToken } from "@/haochi/utils/crypto.ts";
+import { maskProxyUrl, parseProxyConfig } from "@/haochi/utils/proxy.ts";
 
 function emptySessionTokens(): AccountSessionTokens {
   return {
@@ -75,7 +76,6 @@ class MockLoginProvider implements LoginProvider {
 
 class DreaminaLoginProvider implements LoginProvider {
   readonly name = "dreamina";
-  #browser: any = null;
   #puppeteer: any = null;
   readonly headless = process.env.HAOCHI_LOGIN_HEADLESS !== "0";
   readonly debugDir = path.resolve(
@@ -106,8 +106,7 @@ class DreaminaLoginProvider implements LoginProvider {
     return candidates.find((item) => fs.existsSync(item)) || null;
   }
 
-  async #getBrowser() {
-    if (this.#browser && this.#browser.isConnected()) return this.#browser;
+  async #launchBrowser(proxyUrl?: string | null) {
     const puppeteer = await this.#loadPuppeteer();
     const executablePath = this.#getExecutablePath();
     if (!executablePath) {
@@ -116,31 +115,41 @@ class DreaminaLoginProvider implements LoginProvider {
       );
     }
 
-    this.#browser = await puppeteer.launch({
+    const proxyConfig = parseProxyConfig(proxyUrl);
+    const args = [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-blink-features=AutomationControlled",
+      "--lang=en-US,en",
+    ];
+    if (proxyConfig?.server) {
+      args.push(`--proxy-server=${proxyConfig.server}`);
+    }
+
+    const browser = await puppeteer.launch({
       executablePath,
       headless: this.headless,
+      protocolTimeout: Number(process.env.HAOCHI_LOGIN_PROTOCOL_TIMEOUT_MS || 240000),
       defaultViewport: { width: 1440, height: 900 },
       ignoreHTTPSErrors: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-blink-features=AutomationControlled",
-        "--lang=en-US,en",
-      ],
+      args,
     });
-    return this.#browser;
+    return {
+      browser,
+      proxyAuth:
+        proxyConfig?.username || proxyConfig?.password
+          ? {
+              username: proxyConfig.username || "",
+              password: proxyConfig.password || "",
+            }
+          : null,
+      maskedProxy: proxyConfig ? maskProxyUrl(proxyConfig.normalized) : null,
+    };
   }
 
   async close() {
-    if (!this.#browser) return;
-    try {
-      await this.#browser.close();
-    } catch {
-      // ignore
-    } finally {
-      this.#browser = null;
-    }
+    // no-op: 登录浏览器按次启动并在单次登录后立即回收
   }
 
   async #captureDebugArtifacts(page: any, tag: string) {
@@ -164,6 +173,39 @@ class DreaminaLoginProvider implements LoginProvider {
 
   async #delay(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async #applyProxyAuth(page: any, proxyAuth: { username: string; password: string } | null) {
+    if (!page || !proxyAuth) return;
+    await page.authenticate(proxyAuth);
+  }
+
+  async #waitForPopup(
+    browser: any,
+    proxyAuth: { username: string; password: string } | null,
+    timeoutMs = 4000
+  ) {
+    return new Promise<any>((resolve) => {
+      const timer = setTimeout(() => {
+        browser.off("targetcreated", onTargetCreated);
+        resolve(null);
+      }, timeoutMs);
+
+      const onTargetCreated = async (target: any) => {
+        if (target.type() !== "page") return;
+        clearTimeout(timer);
+        browser.off("targetcreated", onTargetCreated);
+        try {
+          const page = await target.page();
+          await this.#applyProxyAuth(page, proxyAuth);
+          resolve(page);
+        } catch {
+          resolve(null);
+        }
+      };
+
+      browser.on("targetcreated", onTargetCreated);
+    });
   }
 
   async #extractCookies(page: any) {
@@ -196,6 +238,93 @@ class DreaminaLoginProvider implements LoginProvider {
       }, {});
   }
 
+  #normalizeRegionPrefix(value: string | null | undefined) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (normalized === "us" || normalized === "us-") return "us-";
+    if (normalized === "hk" || normalized === "hk-") return "hk-";
+    if (normalized === "jp" || normalized === "jp-") return "jp-";
+    if (normalized === "sg" || normalized === "sg-") return "sg-";
+    return "";
+  }
+
+  #prefixSessionToken(token: string | null | undefined, regionPrefix: string) {
+    const raw = String(token || "").trim();
+    if (!raw) return null;
+    if (!regionPrefix) return raw;
+    if (/^(us|hk|jp|sg)-/i.test(raw)) return raw;
+    return `${regionPrefix}${raw}`;
+  }
+
+  async #detectRegionPrefix(page: any) {
+    const envPrefix = this.#normalizeRegionPrefix(process.env.HAOCHI_LOGIN_REGION_PREFIX);
+    if (envPrefix) return envPrefix;
+
+    for (const frame of page.frames()) {
+      try {
+        const regionCode = await frame.evaluate(() => {
+          const normalize = (value: unknown) => {
+            const text = String(value || "").trim().toUpperCase();
+            return ["US", "HK", "JP", "SG"].includes(text) ? text : "";
+          };
+
+          const configText = document.getElementById("tiktok-cookie-banner-config")?.textContent || "";
+          const configMatch = configText.match(/"region":"(US|HK|JP|SG)"/i);
+          if (configMatch?.[1]) return normalize(configMatch[1]);
+
+          const regionLink = Array.from(document.querySelectorAll("a[href*='store_region=']"))
+            .map((node) => (node as HTMLAnchorElement).href || "")
+            .find(Boolean);
+          const linkMatch = regionLink?.match(/[?&]store_region=(us|hk|jp|sg)/i);
+          if (linkMatch?.[1]) return normalize(linkMatch[1]);
+
+          const bodyHtml = document.body?.innerHTML || "";
+          const htmlMatch =
+            bodyHtml.match(/"region":"(US|HK|JP|SG)"/i) ||
+            bodyHtml.match(/[?&]store_region=(us|hk|jp|sg)/i);
+          if (htmlMatch?.[1]) return normalize(htmlMatch[1]);
+
+          return "";
+        });
+
+        const prefix = this.#normalizeRegionPrefix(regionCode);
+        if (prefix) return prefix;
+      } catch {
+        // ignore
+      }
+    }
+
+    return "";
+  }
+
+  async #acceptPrivacyConsent(page: any) {
+    for (const frame of page.frames()) {
+      try {
+        const hasCheckbox = await frame.evaluate(() => {
+          const input = document.querySelector(".privacyCheck input") as HTMLInputElement | null;
+          if (input) return !input.checked;
+          return !!document.querySelector(".privacyCheck");
+        });
+        if (!hasCheckbox) continue;
+
+        try {
+          await frame.click(".privacyCheck", { delay: 30 });
+        } catch {
+          await frame.evaluate(() => {
+            const target =
+              document.querySelector(".privacyCheck") ||
+              document.querySelector(".privacyCheck input");
+            if (target instanceof HTMLElement) target.click();
+          });
+        }
+        await this.#delay(400);
+        return true;
+      } catch {
+        // ignore
+      }
+    }
+    return false;
+  }
+
   async #setInputValue(frame: any, selector: string, value: string) {
     await frame.evaluate(
       (sel: string, nextValue: string) => {
@@ -216,6 +345,23 @@ class DreaminaLoginProvider implements LoginProvider {
       selector,
       value
     );
+  }
+
+  async #hasVisibleSelector(frame: any, selector: string) {
+    return frame.evaluate((candidate: string) => {
+      const element = document.querySelector(candidate) as HTMLElement | null;
+      if (!element) return false;
+      const style = window.getComputedStyle(element);
+      if (
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        style.opacity === "0"
+      ) {
+        return false;
+      }
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    }, selector);
   }
 
   async #clickByTextDeep(page: any, texts: string[], timeoutMs = 10000) {
@@ -252,20 +398,7 @@ class DreaminaLoginProvider implements LoginProvider {
       for (const frame of page.frames()) {
         for (const selector of selectors) {
           try {
-            const found = await frame.evaluate((candidate: string) => {
-              const element = document.querySelector(candidate) as HTMLElement | null;
-              if (!element) return false;
-              const style = window.getComputedStyle(element);
-              if (
-                style.display === "none" ||
-                style.visibility === "hidden" ||
-                style.opacity === "0"
-              ) {
-                return false;
-              }
-              const rect = element.getBoundingClientRect();
-              return rect.width > 0 && rect.height > 0;
-            }, selector);
+            const found = await this.#hasVisibleSelector(frame, selector);
 
             if (found) {
               await this.#setInputValue(frame, selector, value);
@@ -279,6 +412,95 @@ class DreaminaLoginProvider implements LoginProvider {
       await this.#delay(300);
     }
     return false;
+  }
+
+  async #isEmailLoginFormPresent(page: any) {
+    for (const frame of page.frames()) {
+      for (const selector of [
+        '.lv_new_sign_in_panel_wide-form-email input',
+        '.lv_new_sign_in_panel_wide-form-password input',
+        'input[type="email"]',
+        'input[name="email"]',
+        'input[name="username"]',
+        'input[autocomplete="email"]',
+        'input[autocomplete="username"]',
+        'input[autocomplete="on"]',
+        'input[placeholder*="Enter email"]',
+        'input[placeholder*="mail"]',
+      ]) {
+        try {
+          if (await this.#hasVisibleSelector(frame, selector)) return true;
+        } catch {
+          // ignore
+        }
+      }
+    }
+    return false;
+  }
+
+  async #waitForEmailLoginForm(page: any, timeoutMs = 15000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (await this.#isEmailLoginFormPresent(page)) return true;
+      await this.#delay(300);
+    }
+    return false;
+  }
+
+  async #clickContinueWithEmail(page: any, timeoutMs = 12000) {
+    if (await this.#isEmailLoginFormPresent(page)) return true;
+
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      for (const frame of page.frames()) {
+        try {
+          const clicked = await frame.evaluate(() => {
+            const nodes = Array.from(
+              document.querySelectorAll(
+                ".lv_new_third_part_sign_in_expand-button, .lv_new_third_part_sign_in_expand-wrapper .lv_new_third_part_sign_in_expand-button"
+              )
+            );
+            const target = nodes.find((node) => {
+              const text = (node.textContent || "").trim().toLowerCase();
+              if (!text || !text.includes("email")) return false;
+              const element = node as HTMLElement;
+              const style = window.getComputedStyle(element);
+              if (
+                style.display === "none" ||
+                style.visibility === "hidden" ||
+                style.opacity === "0"
+              ) {
+                return false;
+              }
+              const rect = element.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0;
+            }) as HTMLElement | undefined;
+            target?.click();
+            return !!target;
+          });
+
+          if (clicked) {
+            await this.#delay(500);
+            if (await this.#waitForEmailLoginForm(page, 4000)) return true;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      const clickedByText = await this.#clickByTextDeep(
+        page,
+        ["Continue with email", "Continue With Email", "Email", "邮箱", "使用邮箱"],
+        1500
+      );
+      if (clickedByText) {
+        if (await this.#waitForEmailLoginForm(page, 4000)) return true;
+      }
+
+      await this.#delay(300);
+    }
+
+    return this.#isEmailLoginFormPresent(page);
   }
 
   async #clickSelectorDeep(page: any, selector: string, timeoutMs = 8000) {
@@ -299,6 +521,35 @@ class DreaminaLoginProvider implements LoginProvider {
           return true;
         } catch {
           // ignore
+        }
+      }
+      await this.#delay(300);
+    }
+    return false;
+  }
+
+  async #clickVisibleSelectorsDeep(page: any, selectors: string[], timeoutMs = 8000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      for (const frame of page.frames()) {
+        for (const selector of selectors) {
+          try {
+            if (!(await this.#hasVisibleSelector(frame, selector))) continue;
+            const handle = await frame.$(selector);
+            if (!handle) continue;
+            try {
+              await handle.click({ delay: 30 });
+            } catch {
+              await frame.evaluate((sel: string) => {
+                const element = document.querySelector(sel) as HTMLElement | null;
+                element?.click();
+              }, selector);
+            }
+            await this.#delay(250);
+            return true;
+          } catch {
+            // ignore
+          }
         }
       }
       await this.#delay(300);
@@ -329,9 +580,16 @@ class DreaminaLoginProvider implements LoginProvider {
       for (const selector of [
         'input[type="email"]',
         'input[name="email"]',
+        'input[name="username"]',
+        'input[autocomplete="email"]',
+        'input[autocomplete="username"]',
+        'input[placeholder*="mail"]',
         'input[type="password"]',
         '.lv_new_sign_in_panel_wide-form-email input',
         '.lv_new_sign_in_panel_wide-form-password input',
+        '.lv_new_third_part_sign_in_expand-button',
+        '.lv_new_sign_in_panel_wide-detail',
+        '.lv_new_sign_in_panel_wide_new_base_page',
       ]) {
         try {
           const handle = await frame.$(selector);
@@ -353,36 +611,23 @@ class DreaminaLoginProvider implements LoginProvider {
     return false;
   }
 
-  async #openLoginUi(browser: any, page: any) {
+  async #openLoginUi(
+    browser: any,
+    page: any,
+    proxyAuth: { username: string; password: string } | null
+  ) {
     if (await this.#waitForLoginUi(page, 1000)) return page;
 
-    await this.#clickSelectorDeep(page, "#SiderMenuLogin", 4000);
-    await this.#waitForLoginUi(page, 5000);
-    if (!(await this.#isLoginUiPresent(page))) {
-      await this.#clickByTextDeep(page, ["Sign in", "Log in", "登录"], 6000);
-      await this.#waitForLoginUi(page, 10000);
-    }
+    await this.#acceptPrivacyConsent(page);
 
-    const popup = await new Promise<any>((resolve) => {
-      const timer = setTimeout(() => {
-        browser.off("targetcreated", onTargetCreated);
-        resolve(null);
-      }, 3000);
-
-      const onTargetCreated = async (target: any) => {
-        if (target.type() !== "page") return;
-        clearTimeout(timer);
-        browser.off("targetcreated", onTargetCreated);
-        try {
-          resolve(await target.page());
-        } catch {
-          resolve(null);
-        }
-      };
-
-      browser.on("targetcreated", onTargetCreated);
-    });
-
+    let popup = null;
+    const selectorPopup = this.#waitForPopup(browser, proxyAuth, 4000);
+    await this.#clickVisibleSelectorsDeep(
+      page,
+      [".login-button-MoeK5r", ".sign-up-btn", "#SiderMenuLogin"],
+      5000
+    );
+    popup = await selectorPopup;
     if (popup) {
       try {
         await popup.bringToFront();
@@ -390,6 +635,22 @@ class DreaminaLoginProvider implements LoginProvider {
         // ignore
       }
       page = popup;
+    }
+
+    await this.#waitForLoginUi(page, 5000);
+    if (!(await this.#isLoginUiPresent(page))) {
+      const textPopup = this.#waitForPopup(browser, proxyAuth, 4000);
+      await this.#clickByTextDeep(page, ["Sign in", "Log in", "登录"], 6000);
+      popup = await textPopup;
+      if (popup) {
+        try {
+          await popup.bringToFront();
+        } catch {
+          // ignore
+        }
+        page = popup;
+      }
+      await this.#waitForLoginUi(page, 10000);
     }
 
     return page;
@@ -405,14 +666,18 @@ class DreaminaLoginProvider implements LoginProvider {
 
     const password = ensurePassword(account);
     const maskedEmail = maskSecret(account.email, 4, 8);
-    const browser = await this.#getBrowser();
+    const { browser, proxyAuth, maskedProxy } = await this.#launchBrowser(account.proxy);
     const context = await browser.createBrowserContext();
     let page = await context.newPage();
 
     try {
+      await this.#applyProxyAuth(page, proxyAuth);
       await page.setUserAgent(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
       );
+      if (maskedProxy) {
+        push(`启用登录代理 ${maskedProxy}`);
+      }
 
       push(`访问 Dreamina 登录页 (${maskedEmail})`);
       await page.goto("https://dreamina.capcut.com/ai-tool/login", {
@@ -421,18 +686,18 @@ class DreaminaLoginProvider implements LoginProvider {
       });
 
       push("打开登录界面");
-      page = await this.#openLoginUi(browser, page);
+      page = await this.#openLoginUi(browser, page, proxyAuth);
       if (!(await this.#isLoginUiPresent(page))) {
         await this.#captureDebugArtifacts(page, "login_ui_not_found");
-        throw new Error("未成功打开 Dreamina 登录表单");
+        throw new Error("未成功打开 Dreamina 登录界面");
       }
 
       push("切换到邮箱登录");
-      await this.#clickByTextDeep(
-        page,
-        ["Continue with email", "Continue With Email", "Email", "邮箱", "使用邮箱"],
-        10000
-      );
+      const switchedToEmail = await this.#clickContinueWithEmail(page, 12000);
+      if (!switchedToEmail) {
+        await this.#captureDebugArtifacts(page, "email_login_ui_not_found");
+        throw new Error("未成功切换到邮箱登录");
+      }
 
       push("填写邮箱");
       const emailFilled = await this.#fillInputDeep(
@@ -443,8 +708,10 @@ class DreaminaLoginProvider implements LoginProvider {
           'input[name="username"]',
           'input[autocomplete="email"]',
           'input[autocomplete="username"]',
+          'input[autocomplete="on"]',
           'input[placeholder*="mail"]',
           'input[placeholder*="邮箱"]',
+          '.lv_new_sign_in_panel_wide-form-email input',
         ],
         account.email
       );
@@ -456,7 +723,7 @@ class DreaminaLoginProvider implements LoginProvider {
       push("填写密码");
       let passwordFilled = await this.#fillInputDeep(
         page,
-        ['input[type="password"]', 'input[name="password"]'],
+        ['input[type="password"]', 'input[name="password"]', '.lv_new_sign_in_panel_wide-form-password input'],
         password,
         5000
       );
@@ -464,7 +731,7 @@ class DreaminaLoginProvider implements LoginProvider {
         await this.#clickByTextDeep(page, ["Continue", "Next", "继续", "下一步"], 5000);
         passwordFilled = await this.#fillInputDeep(
           page,
-          ['input[type="password"]', 'input[name="password"]'],
+          ['input[type="password"]', 'input[name="password"]', '.lv_new_sign_in_panel_wide-form-password input'],
           password,
           10000
         );
@@ -519,6 +786,13 @@ class DreaminaLoginProvider implements LoginProvider {
         throw new Error("登录未获取到 sessionid，可能触发验证码、二次确认或账号密码错误");
       }
 
+      const regionPrefix = await this.#detectRegionPrefix(page);
+      if (regionPrefix) {
+        push(`识别 Dreamina 区域前缀: ${regionPrefix}`);
+      } else {
+        logger.warn(`[号池登录] ${account.email}: 未识别到 Dreamina 区域前缀，将保留原始 sessionid`);
+      }
+
       push("读取用户信息");
       const userInfo = await page.evaluate(() => {
         const anyWindow = window as any;
@@ -553,9 +827,9 @@ class DreaminaLoginProvider implements LoginProvider {
         userInfo,
         sessionTokens: {
           ...emptySessionTokens(),
-          sessionid: cookies.sessionid || null,
-          sessionid_ss: cookies.sessionid_ss || null,
-          sid_tt: cookies.sid_tt || null,
+          sessionid: this.#prefixSessionToken(cookies.sessionid, regionPrefix),
+          sessionid_ss: this.#prefixSessionToken(cookies.sessionid_ss, regionPrefix),
+          sid_tt: this.#prefixSessionToken(cookies.sid_tt, regionPrefix),
           msToken: cookies.msToken || null,
           passport_csrf_token: cookies.passport_csrf_token || null,
           passport_csrf_token_default: cookies.passport_csrf_token_default || null,
@@ -583,6 +857,11 @@ class DreaminaLoginProvider implements LoginProvider {
       }
       try {
         await context.close();
+      } catch {
+        // ignore
+      }
+      try {
+        await browser.close();
       } catch {
         // ignore
       }
