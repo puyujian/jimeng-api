@@ -8,6 +8,7 @@ import APIException from "../src/lib/exceptions/APIException.ts";
 import API_EX from "../src/api/consts/exceptions.ts";
 import HaochiStateStore from "../src/haochi/storage/state-store.ts";
 import AccountPoolService from "../src/haochi/services/account-pool-service.ts";
+import { JimengErrorHandler } from "../src/lib/error-handler.ts";
 import type { LoginProvider, PoolAccount } from "../src/haochi/types.ts";
 
 function createTempStore(name: string) {
@@ -101,6 +102,45 @@ test("号池在积分耗尽时自动切换并临时拉黑耗尽账号", async (t
   assert.equal(failedAccount?.blacklisted, true);
   assert.equal(failedAccount?.status, "insufficient_credit");
   assert.ok(failedAccount?.blacklistReleaseAt);
+});
+
+test("号池在触发当日生成额度上限时自动切换并临时拉黑账号", async (t) => {
+  const { tempDir, store } = createTempStore("rotation-daily-limit");
+  const service = new AccountPoolService(store, createMockProvider());
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  const accountA = service.createAccount({ email: "limit-a@example.com", password: "p1" });
+  const accountB = service.createAccount({ email: "limit-b@example.com", password: "p2" });
+  await service.refreshAccountSession(accountA.id, "test");
+  await service.refreshAccountSession(accountB.id, "test");
+  const key = service.createApiKey({ name: "daily-limit-client" });
+
+  const result = await service.runWithRequestToken(
+    { headers: { "x-api-key": key.rawKey } },
+    "images",
+    async (_token, context) => {
+      if (context.accountId === accountA.id) {
+        JimengErrorHandler.handleApiResponse(
+          {
+            ret: "121101",
+            errmsg: "Can't generate. Youve reached your daily generation limit.",
+          },
+          {
+            context: "即梦API请求",
+            operation: "请求",
+          }
+        );
+      }
+      return context.accountId;
+    }
+  );
+
+  assert.equal(result, accountB.id);
+  const failedAccount = service.listAccounts().find((item) => item.id === accountA.id);
+  assert.equal(failedAccount?.blacklisted, true);
+  assert.equal(failedAccount?.status, "insufficient_credit");
+  assert.ok(failedAccount?.blacklistReleaseAt);
+  assert.match(failedAccount?.lastError || "", /121101|daily generation limit/i);
 });
 
 test("号池维护任务会自动刷新已失效账号并恢复上线", async (t) => {

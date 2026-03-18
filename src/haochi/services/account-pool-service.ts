@@ -75,7 +75,7 @@ function emptySessionTokens(): AccountSessionTokens {
   };
 }
 
-function primaryToken(account: PoolAccount) {
+function primaryToken(account: Pick<PoolAccount, "sessionTokens">) {
   return (
     account.sessionTokens?.sessionid ||
     account.sessionTokens?.sessionid_ss ||
@@ -700,14 +700,14 @@ export default class AccountPoolService {
 
     if (
       compare?.(API_EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS) ||
-      /1006/.test(message) ||
-      /积分不足|credit/i.test(message)
+      /1006|121101/.test(message) ||
+      /积分不足|credit|daily generation limit/i.test(message)
     ) {
       return {
         retryable: true,
         blacklist: true,
         status: "insufficient_credit" as AccountStatus,
-        reason: message || "积分不足",
+        reason: message || "生成额度已耗尽",
         blacklistReleaseAt: nextShanghaiMidnightIso(),
       };
     }

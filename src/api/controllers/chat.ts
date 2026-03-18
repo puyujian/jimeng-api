@@ -652,23 +652,6 @@ export async function createCompletionStream(
       // 图像生成 (text-to-image)
       logger.info(`[Stream] 开始文生图，模型: ${_model}`);
       const { model, width, height } = parseModel(_model);
-      stream.write(
-        "data: " +
-          JSON.stringify({
-            id: util.uuid(),
-            model: _model || model,
-            object: "chat.completion.chunk",
-            choices: [
-              {
-                index: 0,
-                delta: { role: "assistant", content: "🎨 图像生成中，请稍候..." },
-                finish_reason: null,
-              },
-            ],
-          }) +
-          "\n\n"
-      );
-
       runWithChatToken(
         refreshToken,
         tokenExecutor,
@@ -710,25 +693,6 @@ export async function createCompletionStream(
                   "\n\n"
               );
             }
-            stream.write(
-              "data: " +
-                JSON.stringify({
-                  id: util.uuid(),
-                  model: _model || model,
-                  object: "chat.completion.chunk",
-                  choices: [
-                    {
-                      index: imageUrls.length + 1,
-                      delta: {
-                        role: "assistant",
-                        content: "图像生成完成！",
-                      },
-                      finish_reason: "stop",
-                    },
-                  ],
-                }) +
-                "\n\n"
-            );
             stream.end("data: [DONE]\n\n");
           } else {
             logger.debug('图像生成完成，但流已关闭，跳过写入');

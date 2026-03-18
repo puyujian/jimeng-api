@@ -48,6 +48,12 @@ export class JimengErrorHandler {
       case '5000':
         throw new APIException(EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS, 
           `[积分不足]: ${errmsg}。建议：1)尝试使用1024x1024分辨率，2)检查是否需要购买积分，3)确认账户状态正常`);
+
+      case '121101':
+        throw new APIException(
+          EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS,
+          `[额度耗尽]: ${errmsg}。该账号今日生成额度已用完，请明日再试或切换账号`
+        );
       
       case '4001':
         throw new APIException(EX.API_CONTENT_FILTERED, `[内容违规]: ${errmsg}`);

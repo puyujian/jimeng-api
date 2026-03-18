@@ -24,7 +24,7 @@ const STATUS_LABELS = {
   healthy: "健康",
   blacklisted: "已拉黑",
   invalid: "已失效",
-  insufficient_credit: "积分不足",
+  insufficient_credit: "额度耗尽",
   error: "异常",
   valid: "有效",
   unknown: "未知",

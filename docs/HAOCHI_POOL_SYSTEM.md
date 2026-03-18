@@ -84,7 +84,7 @@
 3. 从健康账号中挑选最合适的账号
 4. 若 Session 过期或即将过期，先自动刷新
 5. 执行上游请求
-6. 若命中“失效 / 积分不足(1006)”则自动拉黑该账号并切换下一个账号
+6. 若命中“失效 / 积分不足(1006) / 当日生成额度耗尽(121101)”则自动拉黑该账号并切换下一个账号
 
 账号如果配置了代理：
 
@@ -115,7 +115,7 @@
   - `idle / healthy / refreshing / expired / invalid / insufficient_credit / blacklisted / disabled / error`
 - `blacklistedReason`
 - `blacklistReleaseAt`
-  - 仅当账号因积分不足被临时拉黑时写入
+  - 仅当账号因积分不足或当日生成额度耗尽被临时拉黑时写入
   - 当前按 `Asia/Shanghai` 的次日 00:00 自动解除拉黑
 - `maxConcurrency`
 - `successCount / failureCount`
@@ -164,12 +164,13 @@
 以下情况会自动拉黑当前账号：
 
 - 积分不足，包括错误信息含 `1006`
+- 当日生成额度耗尽，包括错误信息含 `121101` 或 `daily generation limit`
 
 拉黑后：
 
 - 当前请求自动切换下一个账号重试
 - 管理后台可手动解除拉黑
-- 若是积分不足导致的临时拉黑，会在 `Asia/Shanghai` 次日 00:00 自动解除
+- 若是积分不足或当日生成额度耗尽导致的临时拉黑，会在 `Asia/Shanghai` 次日 00:00 自动解除
 
 说明：
 
