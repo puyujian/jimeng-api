@@ -328,6 +328,10 @@ docker compose up -d --build
 - `HAOCHI_LOGIN_HEADLESS`
   - Docker 默认 `1`
   - 若首登遇到验证码，建议本地临时改 `0` 人工辅助一次
+- `HAOCHI_PROXY_MAX_CONCURRENCY`
+  - 默认 `0`，表示不限制同一代理出口的并发
+  - 如果多个账号共用同一条代理，建议先从 `1` 或 `2` 开始，减少上游排队和代理拒连
+  - 如果账号已经分散到多条代理，这个值可以帮助调度优先把请求摊到不同出口
 - `PUPPETEER_EXECUTABLE_PATH`
   - Docker 默认 `/usr/bin/chromium-browser`
 

@@ -331,6 +331,22 @@ function effectiveValidationStatus(account: Pick<PoolAccount, "lastValidationSta
   return "valid";
 }
 
+function normalizedProxyKey(proxy: string | null | undefined) {
+  return normalizeProxyUrl(proxy) || "";
+}
+
+function accountFailurePenalty(account: Pick<PoolAccount, "successCount" | "failureCount" | "lastError">) {
+  const successCount = Math.max(0, Number(account.successCount || 0));
+  const failureCount = Math.max(0, Number(account.failureCount || 0));
+  const hasRecentError = Boolean(String(account.lastError || "").trim());
+  if (successCount === 0 && failureCount === 0 && !hasRecentError) return 0;
+  const total = successCount + failureCount;
+  const failureRatePenalty = total > 0 ? (failureCount / total) * 100 : 0;
+  const excessFailurePenalty = Math.max(0, failureCount - successCount) * 5;
+  const recentErrorPenalty = hasRecentError ? 20 : 0;
+  return failureRatePenalty + excessFailurePenalty + recentErrorPenalty;
+}
+
 type AccountListStatusFilter = "all" | "healthy" | "invalid" | "blacklisted";
 
 function normalizeAccountListStatusFilter(value: any): AccountListStatusFilter {
@@ -567,6 +583,16 @@ export default class AccountPoolService {
     return this.leaseMap.get(accountId)?.size || 0;
   }
 
+  #buildProxyLeaseCounts(accounts: Pick<PoolAccount, "id" | "proxy">[]) {
+    const counts = new Map<string, number>();
+    for (const account of accounts) {
+      const proxyKey = normalizedProxyKey(account.proxy);
+      if (!proxyKey) continue;
+      counts.set(proxyKey, (counts.get(proxyKey) || 0) + this.getActiveLeaseCount(account.id));
+    }
+    return counts;
+  }
+
   #acquireLease(account: PoolAccount, ability: PoolAbility) {
     const maxConcurrency = clampNumber(
       account.maxConcurrency,
@@ -576,6 +602,14 @@ export default class AccountPoolService {
     );
     const current = this.leaseMap.get(account.id) || new Map<string, AccountLease>();
     if (current.size >= maxConcurrency) return null;
+
+    const proxyKey = normalizedProxyKey(account.proxy);
+    if (proxyKey && this.settings.maxProxyConcurrency > 0) {
+      const proxyLeaseCounts = this.#buildProxyLeaseCounts(this.store.getState().accounts);
+      if ((proxyLeaseCounts.get(proxyKey) || 0) >= this.settings.maxProxyConcurrency) {
+        return null;
+      }
+    }
 
     const leaseId = randomId("lease");
     current.set(leaseId, {
@@ -1607,18 +1641,29 @@ export default class AccountPoolService {
 
   async #selectManagedAccount(ability: PoolAbility, excludedIds: Set<string>) {
     this.#releaseExpiredBlacklistedAccounts();
-    const candidates = this.store
-      .getState()
-      .accounts.filter((item) => item.enabled && !item.blacklisted && !excludedIds.has(item.id))
+    const state = this.store.getState();
+    const proxyLeaseCounts = this.#buildProxyLeaseCounts(state.accounts);
+    const candidates = state.accounts
+      .filter((item) => item.enabled && !item.blacklisted && !excludedIds.has(item.id))
       .sort((a, b) => {
         const leaseDiff = this.getActiveLeaseCount(a.id) - this.getActiveLeaseCount(b.id);
         if (leaseDiff !== 0) return leaseDiff;
+        const proxyLeaseDiff =
+          (proxyLeaseCounts.get(normalizedProxyKey(a.proxy)) || 0) -
+          (proxyLeaseCounts.get(normalizedProxyKey(b.proxy)) || 0);
+        if (proxyLeaseDiff !== 0) return proxyLeaseDiff;
         const statusDiff = statusPriority(a.status) - statusPriority(b.status);
         if (statusDiff !== 0) return statusDiff;
         const validationDiff =
           validationStatusPriority(effectiveValidationStatus(a)) -
           validationStatusPriority(effectiveValidationStatus(b));
         if (validationDiff !== 0) return validationDiff;
+        const reliabilityDiff = accountFailurePenalty(a) - accountFailurePenalty(b);
+        if (reliabilityDiff !== 0) return reliabilityDiff;
+        const successDiff = Number(b.successCount || 0) - Number(a.successCount || 0);
+        if (successDiff !== 0) return successDiff;
+        const recentErrorDiff = Number(Boolean(a.lastError)) - Number(Boolean(b.lastError));
+        if (recentErrorDiff !== 0) return recentErrorDiff;
         return String(a.lastUsedAt || "").localeCompare(String(b.lastUsedAt || ""));
       });
 

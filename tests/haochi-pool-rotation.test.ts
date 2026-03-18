@@ -357,6 +357,119 @@ test("号池优先选择当前 Session 已校验 valid 的账号，而不是过�
   assert.equal(untouchedStale?.lastValidationStatus, "valid");
 });
 
+test("号池会优先选择失败率更低的健康账号，而不是历史失败很多的旧账号", async (t) => {
+  const { tempDir, store } = createTempStore("rotation-prioritize-reliable");
+  const service = new AccountPoolService(store, createMockProvider());
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  const noisyAccount = service.createAccount({ email: "noisy@example.com", password: "p1" });
+  const reliableAccount = service.createAccount({ email: "reliable@example.com", password: "p2" });
+  await service.refreshAccountSession(noisyAccount.id, "test");
+  await service.refreshAccountSession(reliableAccount.id, "test");
+
+  store.update((state) => {
+    const noisy = state.accounts.find((item) => item.id === noisyAccount.id);
+    const reliable = state.accounts.find((item) => item.id === reliableAccount.id);
+    if (noisy) {
+      noisy.successCount = 14;
+      noisy.failureCount = 36;
+      noisy.lastError = "connect ECONNREFUSED 38.12.35.171:2260";
+      noisy.lastUsedAt = "2026-01-01T00:00:00.000Z";
+    }
+    if (reliable) {
+      reliable.successCount = 1;
+      reliable.failureCount = 0;
+      reliable.lastError = null;
+      reliable.lastUsedAt = "2026-12-31T00:00:00.000Z";
+    }
+  });
+
+  const key = service.createApiKey({ name: "reliable-client" });
+  const result = await service.runWithRequestToken(
+    { headers: { "x-api-key": key.rawKey } },
+    "images",
+    async (_token, context) => context.accountId
+  );
+
+  assert.equal(result, reliableAccount.id);
+});
+
+test("号池在同代理达到并发上限时会切换到其他代理账号", async (t) => {
+  const previousProxyLimit = process.env.HAOCHI_PROXY_MAX_CONCURRENCY;
+  process.env.HAOCHI_PROXY_MAX_CONCURRENCY = "1";
+  t.after(() => {
+    if (previousProxyLimit === undefined) {
+      delete process.env.HAOCHI_PROXY_MAX_CONCURRENCY;
+      return;
+    }
+    process.env.HAOCHI_PROXY_MAX_CONCURRENCY = previousProxyLimit;
+  });
+
+  const { tempDir, store } = createTempStore("rotation-proxy-cap");
+  const service = new AccountPoolService(store, createMockProvider());
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  const accountA = service.createAccount({
+    email: "proxy-cap-a@example.com",
+    password: "p1",
+    proxy: "http://127.0.0.1:9001",
+  });
+  const accountB = service.createAccount({
+    email: "proxy-cap-b@example.com",
+    password: "p2",
+    proxy: "http://127.0.0.1:9001",
+  });
+  const accountC = service.createAccount({
+    email: "proxy-cap-c@example.com",
+    password: "p3",
+    proxy: "http://127.0.0.1:9002",
+  });
+  await service.refreshAccountSession(accountA.id, "test");
+  await service.refreshAccountSession(accountB.id, "test");
+  await service.refreshAccountSession(accountC.id, "test");
+
+  store.update((state) => {
+    const later = new Date(Date.now() + 60_000).toISOString();
+    const targetB = state.accounts.find((item) => item.id === accountB.id);
+    const targetC = state.accounts.find((item) => item.id === accountC.id);
+    if (targetB) targetB.lastUsedAt = later;
+    if (targetC) targetC.lastUsedAt = later;
+  });
+
+  const key = service.createApiKey({ name: "proxy-cap-client" });
+  let releaseFirstRequest: (() => void) | null = null;
+  const firstRequestReady = new Promise<void>((resolve) => {
+    releaseFirstRequest = resolve;
+  });
+
+  let resolveFirstSelection: ((value: string) => void) | null = null;
+  const firstSelection = new Promise<string>((resolve) => {
+    resolveFirstSelection = resolve;
+  });
+
+  const firstRequest = service.runWithRequestToken(
+    { headers: { "x-api-key": key.rawKey } },
+    "images",
+    async (_token, context) => {
+      resolveFirstSelection?.(String(context.accountId));
+      await firstRequestReady;
+      return context.accountId;
+    }
+  );
+
+  assert.equal(await firstSelection, accountA.id);
+
+  const secondRequestResult = await service.runWithRequestToken(
+    { headers: { "x-api-key": key.rawKey } },
+    "images",
+    async (_token, context) => context.accountId
+  );
+
+  assert.equal(secondRequestResult, accountC.id);
+  releaseFirstRequest?.();
+  assert.equal(await firstRequest, accountA.id);
+});
+
 test("号池会跳过已标记 invalid 的账号并继续使用下一个候选", async (t) => {
   const { tempDir, store } = createTempStore("rotation-skip-invalid");
   const service = new AccountPoolService(store, createMockProvider());

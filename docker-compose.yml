@@ -13,6 +13,8 @@ services:
       HAOCHI_STATE_PATH: /app/data/haochi/state.json
       HAOCHI_LOGIN_PROVIDER: dreamina
       HAOCHI_LOGIN_HEADLESS: 1
+      # 单代理部署建议先从 1~2 开始，避免同一出口同时堆太多生图任务
+      # HAOCHI_PROXY_MAX_CONCURRENCY: 2
       HAOCHI_ADMIN_USERNAME: admin
       HAOCHI_ADMIN_PASSWORD: ChangeMe123!
       HAOCHI_ACCOUNT_SECRET: change-this-secret-at-least-8

@@ -100,6 +100,7 @@ export interface HaochiSettings {
   sessionRefreshBufferMinutes: number;
   maintenanceIntervalSeconds: number;
   defaultAccountMaxConcurrency: number;
+  maxProxyConcurrency: number;
   maxRequestRetries: number;
   allowLegacyAuthorization: boolean;
   loginProvider: string;

@@ -27,6 +27,7 @@ function defaultSettings(): HaochiSettings {
       20,
       2
     ),
+    maxProxyConcurrency: clampNumber(process.env.HAOCHI_PROXY_MAX_CONCURRENCY, 0, 20, 0),
     maxRequestRetries: clampNumber(process.env.HAOCHI_MAX_REQUEST_RETRIES, 1, 10, 3),
     allowLegacyAuthorization: process.env.HAOCHI_ALLOW_LEGACY_AUTHORIZATION !== "0",
     loginProvider: String(process.env.HAOCHI_LOGIN_PROVIDER || "dreamina").trim().toLowerCase(),
