@@ -177,3 +177,29 @@ test("批量导入支持代理并在调度请求时自动拼接到 token", async
   assert.equal(token, "http://127.0.0.1:9001@jp-session-a");
   assert.equal(service.listApiKeys()[0].rawKey, key.rawKey);
 });
+
+test("批量导入支持第三段使用 Sessionid 标记且不误判为代理", async (t) => {
+  const { tempDir, store } = createTempStore("rotation-import-session-tag");
+  const service = new AccountPoolService(store, createMockProvider());
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  const imported = service.importAccounts({
+    text: "session-tag@example.com----pass-a----Sessionid=jp-session-tag",
+    enabled: true,
+    autoRefresh: false,
+  });
+
+  assert.equal(imported.createdCount, 1);
+  assert.equal(imported.failedCount, 0);
+  assert.equal(imported.items[0]?.proxy, null);
+  assert.equal(imported.items[0]?.status, "healthy");
+
+  const key = service.createApiKey({ name: "session-tag-client" });
+  const token = await service.runWithRequestToken(
+    { headers: { "x-api-key": key.rawKey } },
+    "images",
+    async (currentToken) => currentToken
+  );
+
+  assert.equal(token, "jp-session-tag");
+});

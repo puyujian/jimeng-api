@@ -189,6 +189,7 @@
 
 - `text`
   - 每行一个账号，格式为 `邮箱----密码----代理(可选)----备注(可选)----SessionID(可选)`
+  - 也支持 `邮箱----密码----Sessionid=xxx`，第三段会直接按 SessionID 解析
   - 也兼容制表符、`|`、`,` 分隔
 - `defaultProxy`
 - `enabled`

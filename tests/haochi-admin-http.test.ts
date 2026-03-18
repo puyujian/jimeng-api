@@ -154,6 +154,7 @@ test("号池管理后台 HTTP 链路可用", { concurrency: false }, async (t) =
         text: [
           "batch-a@example.com----pass-a----http://127.0.0.1:9001----节点A",
           "batch-b@example.com----pass-b",
+          "batch-c@example.com----pass-c----Sessionid=jp-session-c",
         ].join("\n"),
         defaultProxy: "socks5://127.0.0.1:1080",
         maxConcurrency: 4,
@@ -164,12 +165,15 @@ test("号池管理后台 HTTP 链路可用", { concurrency: false }, async (t) =
     cookie
   );
   assert.equal(importedAccounts.response.status, 200);
-  assert.equal(importedAccounts.payload.createdCount, 2);
+  assert.equal(importedAccounts.payload.createdCount, 3);
   assert.equal(importedAccounts.payload.failedCount, 0);
   const importedA = importedAccounts.payload.items.find((item: any) => item.email === "batch-a@example.com");
   const importedB = importedAccounts.payload.items.find((item: any) => item.email === "batch-b@example.com");
+  const importedC = importedAccounts.payload.items.find((item: any) => item.email === "batch-c@example.com");
   assert.equal(importedA.proxy, "http://127.0.0.1:9001");
   assert.equal(importedB.proxy, "socks5://127.0.0.1:1080");
+  assert.equal(importedC.proxy, "socks5://127.0.0.1:1080");
+  assert.equal(importedC.status, "healthy");
 
   const createdKey = await httpJson(
     port,
@@ -214,7 +218,7 @@ test("号池管理后台 HTTP 链路可用", { concurrency: false }, async (t) =
 
   const overview = await httpJson(port, "/api/admin/overview", {}, cookie);
   assert.equal(overview.response.status, 200);
-  assert.equal(overview.payload.counts.accounts, 3);
+  assert.equal(overview.payload.counts.accounts, 4);
   assert.equal(overview.payload.counts.apiKeys, 1);
   assert.equal(overview.payload.apiKeys[0].rawKey, rotatedKey.payload.rawKey);
 
