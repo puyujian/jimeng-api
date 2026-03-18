@@ -25,12 +25,15 @@
   - 默认初始化管理员：`admin / ChangeMe123!`
 - `src/haochi/services/login-provider.ts`
   - `DreaminaLoginProvider`：参考 `jimengdl` 的登录/取 Cookie 逻辑
+  - 支持按账号启动独立浏览器实例，并在登录阶段注入账号代理
   - `MockLoginProvider`：用于自动化测试
 - `src/haochi/services/account-pool-service.ts`
   - 账号 CRUD / API Key CRUD
+  - 账号批量导入
   - Session 刷新、校验、黑名单
   - 并发租约计数
   - 外部 API Key 自动路由与失败切换
+  - 调用上游接口时自动把账号代理拼接进请求 token
 - `src/api/routes/haochi-admin.ts`
   - 管理后台接口
 - `src/api/routes/haochi-web.ts`
@@ -47,8 +50,10 @@
 - 登录页
 - 实时总览
 - 账号池 CRUD
+- 账号批量导入
+- 账号代理配置
 - 手动刷新 Session / 校验 Session / 拉黑 / 解除拉黑
-- API Key CRUD / 重置
+- API Key CRUD / 重置 / 常显复制
 - 管理员密码修改
 - 最近动作日志与新签发密钥回显
 
@@ -78,6 +83,11 @@
 5. 执行上游请求
 6. 若命中“失效 / 积分不足(1006)”则自动拉黑该账号并切换下一个账号
 
+账号如果配置了代理：
+
+1. 登录 Dreamina 时浏览器会带上该代理
+2. 调用 Dreamina 接口时也会复用同一代理
+
 ## 3. 数据模型
 
 ### 3.1 管理员
@@ -92,8 +102,12 @@
 - `email`
 - `password`
   - 若配置了 `HAOCHI_ACCOUNT_SECRET`，会以 AES-GCM 加密后落盘
+- `proxy`
+  - 支持 `http/https/socks5`
+  - 登录和上游调用都会复用该代理
 - `sessionTokens`
   - 主要使用 `sessionid`
+- `notes`
 - `status`
   - `idle / healthy / refreshing / expired / invalid / insufficient_credit / blacklisted / disabled / error`
 - `blacklistedReason`
@@ -107,7 +121,12 @@
 - `description`
 - `allowedAbilities`
 - `secretHash`
+- `secretValue`
+  - 用于后台常显和复制 API Key 原文
+  - 若配置了 `HAOCHI_ACCOUNT_SECRET`，会以 AES-GCM 加密后落盘
 - `keyPreview`
+- `rawKey / rawKeyLocked`
+  - 管理后台返回值中的原文字段和是否可解密标记
 - `lastUsedAt`
 
 ## 4. 调度策略
@@ -158,12 +177,25 @@
 
 - `GET /api/admin/accounts`
 - `POST /api/admin/accounts`
+- `POST /api/admin/accounts/import`
 - `PUT /api/admin/accounts/:id`
 - `DELETE /api/admin/accounts/:id`
 - `POST /api/admin/accounts/:id/refresh-session`
 - `POST /api/admin/accounts/:id/validate-session`
 - `POST /api/admin/accounts/:id/blacklist`
 - `POST /api/admin/accounts/:id/unblacklist`
+
+批量导入请求体支持：
+
+- `text`
+  - 每行一个账号，格式为 `邮箱----密码----代理(可选)----备注(可选)----SessionID(可选)`
+  - 也兼容制表符、`|`、`,` 分隔
+- `defaultProxy`
+- `enabled`
+- `autoRefresh`
+- `maxConcurrency`
+- `overwriteExisting`
+  - 默认 `true`
 
 ### 5.3 API Key
 
@@ -172,6 +204,16 @@
 - `PUT /api/admin/api-keys/:id`
 - `DELETE /api/admin/api-keys/:id`
 - `POST /api/admin/api-keys/:id/rotate`
+
+接口返回会额外携带：
+
+- `rawKey`
+- `rawKeyLocked`
+
+说明：
+
+- 新建和重置 API Key 时会直接持久化原文，后台列表可随时显示和复制
+- 老数据若历史上只存了 hash，没有原文，则在该 key 首次成功调用受管接口后自动回填原文
 
 ### 5.4 总览
 
@@ -268,10 +310,11 @@ curl http://127.0.0.1:5100/v1/chat/completions \
 当前仓库已补自动化测试：
 
 - `tests/haochi-admin-http.test.ts`
-  - 验证后台登录、账号 CRUD、Session 刷新、Session 校验、API Key CRUD
+  - 验证后台登录、账号 CRUD、批量导入、Session 刷新、Session 校验、API Key CRUD
 - `tests/haochi-pool-rotation.test.ts`
   - 验证失效自动切换与拉黑
   - 验证积分不足自动切换与拉黑
+  - 验证批量导入后的代理在调度请求时会自动透传
 
 本地验证命令：
 

@@ -7,179 +7,297 @@
     <link rel="stylesheet" href="/admin/assets/styles.css" />
   </head>
   <body>
-    <div class="backdrop"></div>
+    <div class="page-aurora" aria-hidden="true"></div>
+    <div class="page-grid" aria-hidden="true">
+      <span></span>
+      <span></span>
+      <span></span>
+      <span></span>
+    </div>
+
     <main class="shell">
-      <section class="hero">
-        <p class="eyebrow">Dreamina Account Pool</p>
-        <h1>把账号、Session、API Key 和轮换策略收在同一个控制台里。</h1>
-        <p class="hero-copy">
-          这个后台专门服务 Dreamina 号池场景：管理员登录后可以维护账号池、发放外部 API Key、
-          观察健康度、手动刷新 Session，并让外部 OpenAI 兼容请求自动走健康账号。
-        </p>
-        <div class="hero-tags">
-          <span>自动登录续期</span>
-          <span>积分耗尽拉黑</span>
-          <span>多并发租约调度</span>
-          <span>Docker 部署友好</span>
-        </div>
-      </section>
-
-      <div id="notice-banner" class="notice" hidden></div>
-
-      <section id="login-view" class="card auth-card">
-        <div class="section-head">
-          <div>
-            <p class="section-kicker">Admin Login</p>
-            <h2>登录控制台</h2>
+      <section class="hero-panel">
+        <div class="hero-copy-block panel-shell">
+          <p class="eyebrow">Dreamina Account Pool</p>
+          <h1>把账号池、Session、密钥和调度状态压进同一个运维控制台。</h1>
+          <p class="hero-copy">
+            这个后台面向 Dreamina 号池运营场景，重点服务账号可用性维护、
+            API Key 发放、Session 续期和健康调度，不再让关键状态散落在脚本、
+            Docker 日志和临时表格里。
+          </p>
+          <div class="hero-tags">
+            <span>Session 自动续期</span>
+            <span>黑名单可追溯</span>
+            <span>并发租约透明</span>
+            <span>OpenAI 兼容出口</span>
           </div>
         </div>
-        <form id="login-form" class="grid-form">
+
+        <aside class="hero-side panel-shell">
+          <div class="hero-side-head">
+            <p class="section-kicker">Ops Focus</p>
+            <h2>进入后台后先看运行状态，再处理账号与密钥。</h2>
+          </div>
+          <div class="signal-grid">
+            <article class="signal-card">
+              <span>账号侧</span>
+              <strong>健康 / 黑名单 / Session</strong>
+              <p>把是否能接单、是否该续期直接暴露在一个视图里。</p>
+            </article>
+            <article class="signal-card">
+              <span>调用侧</span>
+              <strong>Key 能力 / 最近使用 / 签发结果</strong>
+              <p>避免外部调用方状态不透明，创建后可以立刻复制交付。</p>
+            </article>
+            <article class="signal-card">
+              <span>安全侧</span>
+              <strong>管理员会话 / 密码更新 / 最近动作</strong>
+              <p>敏感操作集中在右侧安全区，减少误触和视线切换。</p>
+            </article>
+          </div>
+        </aside>
+      </section>
+
+      <div id="notice-banner" class="notice" hidden role="status" aria-live="polite"></div>
+
+      <section id="login-view" class="auth-layout panel-shell view-shell">
+        <div class="auth-copy">
+          <p class="section-kicker">Admin Login</p>
+          <h2>登录控制台</h2>
+          <p class="muted">
+            登录后即可维护账号池、刷新 Session、签发 API Key，并查看当前调度可承载的健康账号。
+          </p>
+          <div class="auth-points">
+            <article>
+              <strong>统一入口</strong>
+              <p>账号、密钥和安全设置全部在同一个后台完成。</p>
+            </article>
+            <article>
+              <strong>即时反馈</strong>
+              <p>导入、刷新、拉黑、重置密钥后都会记录到动作日志。</p>
+            </article>
+            <article>
+              <strong>移动端可用</strong>
+              <p>小屏也能完成核心维护，不再依赖桌面大屏。</p>
+            </article>
+          </div>
+        </div>
+
+        <form id="login-form" class="grid-form auth-form">
           <label>
             <span>用户名</span>
             <input id="login-username" name="username" autocomplete="username" required />
           </label>
           <label>
             <span>密码</span>
-            <input id="login-password" name="password" type="password" autocomplete="current-password" required />
+            <input
+              id="login-password"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              required
+            />
           </label>
-          <button class="primary-btn" type="submit">登录并进入控制台</button>
+          <div class="form-actions full-span">
+            <button class="primary-btn" type="submit">登录并进入控制台</button>
+          </div>
         </form>
       </section>
 
-      <section id="app-view" class="dashboard" hidden>
-        <div class="toolbar card">
-          <div>
+      <section id="app-view" class="dashboard view-shell" hidden>
+        <section class="toolbar panel-shell">
+          <div class="toolbar-copy">
             <p class="section-kicker">Control Room</p>
             <h2>号池运营台</h2>
-            <p id="user-summary" class="muted"></p>
+            <p class="muted">
+              页面左侧处理账号和导入，右侧集中管理密钥、安全和最近动作。
+            </p>
+            <p id="user-summary" class="summary-line"></p>
           </div>
-          <div class="toolbar-actions">
-            <button id="reload-overview" class="ghost-btn" type="button">刷新总览</button>
-            <button id="logout-btn" class="ghost-btn" type="button">退出登录</button>
-          </div>
-        </div>
 
-        <section class="card">
-          <div class="section-head">
-            <div>
-              <p class="section-kicker">Overview</p>
-              <h3>实时总览</h3>
+          <div class="toolbar-side">
+            <div class="status-rail">
+              <span class="status-chip">健康账号优先调度</span>
+              <span class="status-chip">创建后即时复制 Key</span>
+              <span class="status-chip">支持人工导入 Session</span>
+            </div>
+            <div class="toolbar-actions">
+              <button id="reload-overview" class="ghost-btn" type="button">刷新总览</button>
+              <button id="logout-btn" class="ghost-btn" type="button">退出登录</button>
             </div>
           </div>
-          <div id="metrics-grid" class="metrics-grid"></div>
+        </section>
+
+        <section class="overview-grid">
+          <section class="panel-shell">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Overview</p>
+                <h3>实时总览</h3>
+              </div>
+            </div>
+            <div id="metrics-grid" class="metrics-grid"></div>
+          </section>
+
+          <section class="panel-shell insight-panel">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Signals</p>
+                <h3>运行信号</h3>
+              </div>
+            </div>
+            <div class="signal-summary-grid">
+              <article class="signal-summary-card">
+                <span>登录提供方</span>
+                <strong id="provider-badge">等待数据</strong>
+              </article>
+              <article class="signal-summary-card">
+                <span>Session TTL</span>
+                <strong id="session-ttl-badge">等待数据</strong>
+              </article>
+              <article class="signal-summary-card">
+                <span>账号健康度</span>
+                <strong id="account-health-badge">等待数据</strong>
+              </article>
+              <article class="signal-summary-card">
+                <span>Key 状态</span>
+                <strong id="key-policy-badge">等待数据</strong>
+              </article>
+            </div>
+            <p id="overview-note" class="muted overview-note">等待总览数据...</p>
+          </section>
         </section>
 
         <section class="workspace-grid">
-          <div class="card">
-            <div class="section-head">
-              <div>
-                <p class="section-kicker">Accounts</p>
-                <h3>账号池维护</h3>
-              </div>
-              <button id="reset-account-form" class="ghost-btn" type="button">新建账号</button>
-            </div>
-            <form id="account-form" class="grid-form compact-form">
-              <input id="account-id" type="hidden" />
-              <label>
-                <span>邮箱</span>
-                <input id="account-email" required />
-              </label>
-              <label>
-                <span>密码</span>
-                <input id="account-password" type="password" placeholder="留空表示不改密码" />
-              </label>
-              <label>
-                <span>手动 SessionID</span>
-                <input id="account-session-id" placeholder="可选，适合先导入已有 session" />
-              </label>
-              <label>
-                <span>代理</span>
-                <input id="account-proxy" placeholder="可选，例如 http://127.0.0.1:7890 或 socks5://host:port" />
-              </label>
-              <label>
-                <span>并发上限</span>
-                <input id="account-max-concurrency" type="number" min="1" max="20" value="2" />
-              </label>
-              <label class="checkbox-field">
-                <input id="account-enabled" type="checkbox" checked />
-                <span>启用账号</span>
-              </label>
-              <label class="checkbox-field">
-                <input id="account-auto-refresh" type="checkbox" checked />
-                <span>允许自动续期</span>
-              </label>
-              <label class="full-span">
-                <span>备注</span>
-                <textarea id="account-notes" rows="3"></textarea>
-              </label>
-              <div class="form-actions full-span">
-                <button class="primary-btn" type="submit">保存账号</button>
-                <button id="clear-account-session" class="ghost-btn" type="button">清空 Session</button>
-              </div>
-            </form>
-            <section class="subpanel">
+          <div class="main-column">
+            <section class="panel-shell">
               <div class="section-head">
                 <div>
-                  <p class="section-kicker">Batch Import</p>
-                  <h3>批量导入账号</h3>
+                  <p class="section-kicker">Accounts</p>
+                  <h3>账号池维护</h3>
                 </div>
+                <button id="reset-account-form" class="ghost-btn" type="button">新建账号</button>
               </div>
-              <form id="account-import-form" class="grid-form compact-form">
-                <label class="full-span">
-                  <span>导入内容</span>
-                  <textarea
-                    id="account-import-text"
-                    rows="6"
-                    placeholder="每行支持：邮箱----密码----代理(可选)----备注(可选)----SessionID(可选)"
-                  ></textarea>
+
+              <form id="account-form" class="grid-form compact-form">
+                <input id="account-id" type="hidden" />
+                <label>
+                  <span>邮箱</span>
+                  <input id="account-email" required />
                 </label>
                 <label>
-                  <span>默认代理</span>
-                  <input id="account-import-default-proxy" placeholder="整批默认代理，可空" />
+                  <span>密码</span>
+                  <input id="account-password" type="password" placeholder="留空表示不改密码" />
                 </label>
                 <label>
-                  <span>默认并发上限</span>
-                  <input id="account-import-max-concurrency" type="number" min="1" max="20" value="2" />
+                  <span>手动 SessionID</span>
+                  <input id="account-session-id" placeholder="可选，适合先导入已有 session" />
+                </label>
+                <label>
+                  <span>代理</span>
+                  <input
+                    id="account-proxy"
+                    placeholder="可选，例如 http://127.0.0.1:7890 或 socks5://host:port"
+                  />
+                </label>
+                <label>
+                  <span>并发上限</span>
+                  <input id="account-max-concurrency" type="number" min="1" max="20" value="2" />
                 </label>
                 <label class="checkbox-field">
-                  <input id="account-import-enabled" type="checkbox" checked />
-                  <span>导入后启用</span>
+                  <input id="account-enabled" type="checkbox" checked />
+                  <span>启用账号</span>
                 </label>
                 <label class="checkbox-field">
-                  <input id="account-import-auto-refresh" type="checkbox" checked />
+                  <input id="account-auto-refresh" type="checkbox" checked />
                   <span>允许自动续期</span>
                 </label>
-                <label class="checkbox-field full-span">
-                  <input id="account-import-overwrite" type="checkbox" checked />
-                  <span>同邮箱已存在时覆盖更新</span>
+                <label class="full-span">
+                  <span>备注</span>
+                  <textarea id="account-notes" rows="3"></textarea>
                 </label>
-                <p class="muted full-span helper-copy">
-                  行内代理优先级高于默认代理。保存后，代理会同时参与 Dreamina 登录和业务调用。
-                </p>
                 <div class="form-actions full-span">
-                  <button class="primary-btn" type="submit">开始批量导入</button>
+                  <button class="primary-btn" type="submit">保存账号</button>
+                  <button id="clear-account-session" class="ghost-btn" type="button">清空 Session</button>
                 </div>
               </form>
+
+              <section class="subpanel">
+                <div class="section-head">
+                  <div>
+                    <p class="section-kicker">Batch Import</p>
+                    <h3>批量导入账号</h3>
+                  </div>
+                </div>
+
+                <form id="account-import-form" class="grid-form compact-form">
+                  <label class="full-span">
+                    <span>导入内容</span>
+                    <textarea
+                      id="account-import-text"
+                      rows="6"
+                      placeholder="每行支持：邮箱----密码----代理(可选)----备注(可选)----SessionID(可选)"
+                    ></textarea>
+                  </label>
+                  <label>
+                    <span>默认代理</span>
+                    <input id="account-import-default-proxy" placeholder="整批默认代理，可空" />
+                  </label>
+                  <label>
+                    <span>默认并发上限</span>
+                    <input id="account-import-max-concurrency" type="number" min="1" max="20" value="2" />
+                  </label>
+                  <label class="checkbox-field">
+                    <input id="account-import-enabled" type="checkbox" checked />
+                    <span>导入后启用</span>
+                  </label>
+                  <label class="checkbox-field">
+                    <input id="account-import-auto-refresh" type="checkbox" checked />
+                    <span>允许自动续期</span>
+                  </label>
+                  <label class="checkbox-field full-span">
+                    <input id="account-import-overwrite" type="checkbox" checked />
+                    <span>同邮箱已存在时覆盖更新</span>
+                  </label>
+                  <p class="muted full-span helper-copy">
+                    行内代理优先级高于默认代理。保存后，代理会同时参与 Dreamina 登录和业务调用。
+                  </p>
+                  <div class="form-actions full-span">
+                    <button class="primary-btn" type="submit">开始批量导入</button>
+                  </div>
+                </form>
+              </section>
+
+              <section class="data-panel">
+                <div class="data-panel-head">
+                  <div>
+                    <p class="section-kicker">Roster</p>
+                    <h3>账号池清单</h3>
+                  </div>
+                  <p class="muted">状态、Session、并发和异常都集中在同一张表里。</p>
+                </div>
+
+                <div class="table-wrap">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">状态</th>
+                        <th scope="col">邮箱</th>
+                        <th scope="col">Session</th>
+                        <th scope="col">并发</th>
+                        <th scope="col">使用 / 错误</th>
+                        <th scope="col">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="accounts-table-body"></tbody>
+                  </table>
+                </div>
+              </section>
             </section>
-            <div class="table-wrap">
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th>状态</th>
-                    <th>邮箱</th>
-                    <th>Session</th>
-                    <th>并发</th>
-                    <th>使用/错误</th>
-                    <th>操作</th>
-                  </tr>
-                </thead>
-                <tbody id="accounts-table-body"></tbody>
-              </table>
-            </div>
           </div>
 
-          <div class="stack">
-            <section class="card">
+          <aside class="stack side-column">
+            <section class="panel-shell">
               <div class="section-head">
                 <div>
                   <p class="section-kicker">API Keys</p>
@@ -187,6 +305,7 @@
                 </div>
                 <button id="reset-key-form" class="ghost-btn" type="button">新建 Key</button>
               </div>
+
               <form id="key-form" class="grid-form compact-form">
                 <input id="key-id" type="hidden" />
                 <label>
@@ -212,29 +331,41 @@
                   <button class="primary-btn" type="submit">保存 API Key</button>
                 </div>
               </form>
-              <div class="table-wrap">
-                <table class="data-table">
-                  <thead>
-                  <tr>
-                    <th>名称</th>
-                    <th>完整密钥</th>
-                    <th>能力</th>
-                    <th>最近使用</th>
-                    <th>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody id="keys-table-body"></tbody>
-                </table>
-              </div>
+
+              <section class="data-panel">
+                <div class="data-panel-head">
+                  <div>
+                    <p class="section-kicker">Callers</p>
+                    <h3>Key 列表</h3>
+                  </div>
+                  <p class="muted">完整密钥仅在允许时展示，可即时复制或重置。</p>
+                </div>
+
+                <div class="table-wrap">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">名称</th>
+                        <th scope="col">完整密钥</th>
+                        <th scope="col">能力</th>
+                        <th scope="col">最近使用</th>
+                        <th scope="col">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="keys-table-body"></tbody>
+                  </table>
+                </div>
+              </section>
             </section>
 
-            <section class="card">
+            <section class="panel-shell mini-panel">
               <div class="section-head">
                 <div>
                   <p class="section-kicker">Security</p>
                   <h3>管理员密码</h3>
                 </div>
               </div>
+
               <form id="password-form" class="grid-form compact-form">
                 <label>
                   <span>当前密码</span>
@@ -250,21 +381,22 @@
               </form>
             </section>
 
-            <section class="card">
+            <section class="panel-shell mini-panel">
               <div class="section-head">
                 <div>
                   <p class="section-kicker">Issued Secret</p>
                   <h3>最近签发密钥</h3>
                 </div>
               </div>
+
               <p class="muted">
-                下方表格中的 API Key 现在支持常显和复制；这里保留最近一次创建或重置结果。
+                新密钥只会在创建或重置时回显一次。请立即复制给外部调用方。
               </p>
               <pre id="issued-secret" class="secret-box">暂无新密钥</pre>
               <button id="copy-secret" class="ghost-btn" type="button">复制到剪贴板</button>
             </section>
 
-            <section class="card">
+            <section class="panel-shell mini-panel">
               <div class="section-head">
                 <div>
                   <p class="section-kicker">Activity</p>
@@ -273,11 +405,11 @@
               </div>
               <pre id="activity-log" class="activity-log">等待操作...</pre>
             </section>
-          </div>
+          </aside>
         </section>
       </section>
     </main>
 
     <script type="module" src="/admin/assets/app.js"></script>
   </body>
-  </html>
+</html>
