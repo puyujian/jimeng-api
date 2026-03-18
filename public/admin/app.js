@@ -2,8 +2,17 @@ const state = {
   user: null,
   overview: null,
   accountsById: new Map(),
+  selectedAccountIds: new Set(),
+  accountsPagination: {
+    page: 1,
+    pageSize: 10,
+    total: 0,
+    totalPages: 1,
+  },
+  accountsStatusFilter: "all",
   keysById: new Map(),
   clearSessionOnSave: false,
+  outboundLogs: [],
 };
 
 const STATUS_LABELS = {
@@ -23,6 +32,23 @@ const ABILITY_LABELS = {
   token: "Token",
 };
 
+const REGION_LABELS = {
+  cn: "中国区",
+  us: "美国区",
+  hk: "香港区",
+  jp: "日本区",
+  sg: "新加坡区",
+};
+
+const ACCOUNT_STATUS_FILTER_LABELS = {
+  all: "账号",
+  healthy: "健康账号",
+  invalid: "失效账号",
+  blacklisted: "拉黑账号",
+};
+
+const ACCOUNT_TABLE_COLSPAN = 7;
+
 const refs = {
   loginView: document.getElementById("login-view"),
   appView: document.getElementById("app-view"),
@@ -33,10 +59,29 @@ const refs = {
   keyForm: document.getElementById("key-form"),
   passwordForm: document.getElementById("password-form"),
   accountsTableBody: document.getElementById("accounts-table-body"),
+  accountsStatusFilter: document.getElementById("accounts-status-filter"),
+  accountsRefreshInvalidButton: document.getElementById("accounts-refresh-invalid"),
+  accountsValidateAllButton: document.getElementById("accounts-validate-all"),
+  accountsSelectAll: document.getElementById("accounts-select-all"),
+  accountsSelectionSummary: document.getElementById("accounts-selection-summary"),
+  accountsBatchApplyAll: document.getElementById("accounts-batch-apply-all"),
+  accountsBatchProxyMode: document.getElementById("accounts-batch-proxy-mode"),
+  accountsBatchProxy: document.getElementById("accounts-batch-proxy"),
+  accountsBatchRegion: document.getElementById("accounts-batch-region"),
+  accountsBatchApplyButton: document.getElementById("accounts-batch-apply"),
+  accountsBatchDeleteButton: document.getElementById("accounts-batch-delete"),
+  accountsTableMeta: document.getElementById("accounts-table-meta"),
+  accountsPageIndicator: document.getElementById("accounts-page-indicator"),
+  accountsPagePrev: document.getElementById("accounts-page-prev"),
+  accountsPageNext: document.getElementById("accounts-page-next"),
+  accountsPageSize: document.getElementById("accounts-page-size"),
   keysTableBody: document.getElementById("keys-table-body"),
   metricsGrid: document.getElementById("metrics-grid"),
   userSummary: document.getElementById("user-summary"),
   activityLog: document.getElementById("activity-log"),
+  outboundLog: document.getElementById("outbound-log"),
+  outboundLogMeta: document.getElementById("outbound-log-meta"),
+  reloadOutboundLogsButton: document.getElementById("reload-outbound-logs"),
   providerBadge: document.getElementById("provider-badge"),
   sessionTtlBadge: document.getElementById("session-ttl-badge"),
   accountHealthBadge: document.getElementById("account-health-badge"),
@@ -131,6 +176,24 @@ function appendLog(title, detail) {
   refs.activityLog.textContent = `[${new Date().toLocaleString()}] ${title}\n${content}\n\n${refs.activityLog.textContent}`;
 }
 
+function renderOutboundLogs(payload) {
+  state.outboundLogs = payload.entries || [];
+  const updatedAt = formatTime(payload.updatedAt);
+
+  refs.outboundLogMeta.textContent = payload.available
+    ? `文件 ${payload.fileName} | 显示 ${payload.returnedCount}/${payload.totalMatched} 条 | 最后更新 ${updatedAt}`
+    : payload.emptyReason || "当前环境没有可读取的日志文件";
+
+  refs.outboundLog.textContent = state.outboundLogs.length
+    ? state.outboundLogs.map((entry) => entry.raw).join("\n")
+    : payload.emptyReason || "当前还没有外部调用日志";
+}
+
+function renderOutboundLogError(error) {
+  refs.outboundLogMeta.textContent = "调用日志加载失败";
+  refs.outboundLog.textContent = error?.message || "未知错误";
+}
+
 function showLogin() {
   activateView(refs.loginView, refs.appView);
 }
@@ -144,6 +207,14 @@ function formatTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
   return date.toLocaleString();
+}
+
+function formatAccountIssue(item) {
+  const primary = item.lastError || item.blacklistedReason || "无异常";
+  if (item.blacklisted && item.blacklistReleaseAt) {
+    return `${primary} | 自动解除: ${formatTime(item.blacklistReleaseAt)}`;
+  }
+  return primary;
 }
 
 function escapeHtml(value) {
@@ -180,6 +251,14 @@ function abilityLabels(abilities) {
     .join(" ");
 }
 
+function regionLabel(region) {
+  return REGION_LABELS[String(region || "cn").toLowerCase()] || String(region || "cn").toUpperCase();
+}
+
+function accountStatusFilterLabel(filter) {
+  return ACCOUNT_STATUS_FILTER_LABELS[String(filter || "all").toLowerCase()] || "账号";
+}
+
 function collectAbilities() {
   return Array.from(document.querySelectorAll('input[name="ability"]:checked')).map((input) => input.value);
 }
@@ -192,6 +271,96 @@ function emptyTableRow(colspan, message) {
       </td>
     </tr>
   `;
+}
+
+function currentVisibleAccountIds() {
+  return Array.from(state.accountsById.keys());
+}
+
+function syncBatchProxyInputState() {
+  const mode = refs.accountsBatchProxyMode.value;
+  refs.accountsBatchProxy.disabled = mode !== "set";
+  if (mode !== "set") {
+    refs.accountsBatchProxy.value = "";
+  }
+}
+
+function syncAccountSelectionUi() {
+  const visibleIds = currentVisibleAccountIds();
+  const selectedVisibleCount = visibleIds.filter((id) => state.selectedAccountIds.has(id)).length;
+  const totalSelectedCount = state.selectedAccountIds.size;
+
+  refs.accountsSelectAll.disabled = !visibleIds.length;
+  refs.accountsSelectAll.checked = Boolean(visibleIds.length) && selectedVisibleCount === visibleIds.length;
+  refs.accountsSelectAll.indeterminate =
+    selectedVisibleCount > 0 && selectedVisibleCount < visibleIds.length;
+
+  refs.accountsSelectionSummary.textContent = refs.accountsBatchApplyAll.checked
+    ? `将作用到全部 ${state.accountsPagination.total || 0} 个账号`
+    : `已选 ${totalSelectedCount} 个账号`;
+}
+
+function resolveBatchAccountTarget() {
+  if (refs.accountsBatchApplyAll.checked) {
+    return {
+      applyToAll: true,
+    };
+  }
+
+  const ids = Array.from(state.selectedAccountIds);
+  if (!ids.length) {
+    throw new Error("请先勾选要批量处理的账号，或开启“作用到全部账号”");
+  }
+
+  return {
+    ids,
+  };
+}
+
+function setAccountsTableLoading(message = "账号列表加载中...") {
+  state.accountsById = new Map();
+  refs.accountsTableBody.innerHTML = emptyTableRow(ACCOUNT_TABLE_COLSPAN, message);
+  refs.accountsTableMeta.textContent = message;
+  refs.accountsPageIndicator.textContent = "加载中";
+  refs.accountsPagePrev.disabled = true;
+  refs.accountsPageNext.disabled = true;
+  syncAccountSelectionUi();
+}
+
+function syncAccountsPagination(pageData = {}) {
+  const total = Number(pageData.total || 0);
+  const pageSize = Number(pageData.pageSize || state.accountsPagination.pageSize || 10);
+  const totalPages = Math.max(1, Number(pageData.totalPages || (total ? Math.ceil(total / pageSize) : 1) || 1));
+  const page = Math.min(totalPages, Math.max(1, Number(pageData.page || 1)));
+  const statusFilter = String(pageData.status || state.accountsStatusFilter || "all");
+
+  state.accountsPagination = {
+    page,
+    pageSize,
+    total,
+    totalPages,
+  };
+  state.accountsStatusFilter = statusFilter;
+
+  refs.accountsPageSize.value = String(pageSize);
+  refs.accountsStatusFilter.value = statusFilter;
+
+  if (!total) {
+    refs.accountsTableMeta.textContent = `${accountStatusFilterLabel(statusFilter)}暂无数据。`;
+    refs.accountsPageIndicator.textContent = "暂无数据";
+    refs.accountsPagePrev.disabled = true;
+    refs.accountsPageNext.disabled = true;
+    syncAccountSelectionUi();
+    return;
+  }
+
+  const start = (page - 1) * pageSize + 1;
+  const end = start + Math.max(0, Number(pageData.items?.length || 0)) - 1;
+  refs.accountsTableMeta.textContent = `显示 ${start}-${end} / ${total} 个${accountStatusFilterLabel(statusFilter)}`;
+  refs.accountsPageIndicator.textContent = `第 ${page} / ${totalPages} 页`;
+  refs.accountsPagePrev.disabled = page <= 1;
+  refs.accountsPageNext.disabled = page >= totalPages;
+  syncAccountSelectionUi();
 }
 
 function clampProgress(value) {
@@ -241,6 +410,7 @@ function resetAccountForm() {
   document.getElementById("account-password").value = "";
   document.getElementById("account-session-id").value = "";
   document.getElementById("account-proxy").value = "";
+  document.getElementById("account-region").value = "jp";
   document.getElementById("account-max-concurrency").value = "2";
   document.getElementById("account-enabled").checked = true;
   document.getElementById("account-auto-refresh").checked = true;
@@ -254,6 +424,7 @@ function fillAccountForm(item) {
   document.getElementById("account-password").value = "";
   document.getElementById("account-session-id").value = "";
   document.getElementById("account-proxy").value = item.proxy || "";
+  document.getElementById("account-region").value = item.region || "cn";
   document.getElementById("account-max-concurrency").value = String(item.maxConcurrency || 2);
   document.getElementById("account-enabled").checked = Boolean(item.enabled);
   document.getElementById("account-auto-refresh").checked = Boolean(item.autoRefresh);
@@ -281,15 +452,15 @@ function fillKeyForm(item) {
   });
 }
 
-function renderMetrics(overview) {
+function renderMetrics(overview, options = {}) {
+  const animate = options.animate !== false;
   const counts = overview.counts || {};
   const accountsTotal = Number(counts.accounts || 0);
   const healthy = Number(counts.healthy || 0);
   const withSession = Number(counts.withSession || 0);
   const blacklisted = Number(counts.blacklisted || 0);
   const activeLeases = Number(counts.activeLeases || 0);
-  const totalCapacity =
-    (overview.accounts || []).reduce((sum, item) => sum + Number(item.maxConcurrency || 0), 0) || 0;
+  const totalCapacity = Number(counts.totalCapacity || 0);
 
   const metrics = [
     {
@@ -332,7 +503,9 @@ function renderMetrics(overview) {
   refs.metricsGrid.innerHTML = metrics
     .map(
       (item, index) => `
-        <article class="metric-card motion-item" style="--item-index:${index}" ${
+        <article class="metric-card${animate ? " motion-item" : ""}"${
+          animate ? ` style="--item-index:${index}"` : ""
+        } ${
           item.tone ? `data-tone="${item.tone}"` : ""
         }>
           <span class="muted">${escapeHtml(item.label)}</span>
@@ -369,29 +542,47 @@ function renderOverviewSignals(overview) {
     : "当前还没有账号，建议先在左侧创建单个账号，或使用批量导入把号池灌入系统。";
 }
 
-function renderAccounts(accounts) {
+function renderAccounts(accounts, options = {}) {
+  const animate = options.animate !== false;
   state.accountsById = new Map(accounts.map((item) => [item.id, item]));
   if (!accounts.length) {
-    refs.accountsTableBody.innerHTML = emptyTableRow(6, "暂无账号，先通过上方表单创建，或用批量导入灌入账号池。");
+    refs.accountsTableBody.innerHTML = emptyTableRow(
+      ACCOUNT_TABLE_COLSPAN,
+      "暂无账号，先通过上方表单创建，或用批量导入灌入账号池。"
+    );
+    syncAccountSelectionUi();
     return;
   }
 
   refs.accountsTableBody.innerHTML = accounts
     .map(
       (item, index) => `
-        <tr class="motion-item" style="--item-index:${index}">
+        <tr class="${animate ? "motion-item" : ""}"${animate ? ` style="--item-index:${index}"` : ""}>
+          <td data-label="选择">
+            <label class="table-select">
+              <input
+                type="checkbox"
+                data-account-select
+                value="${escapeHtml(item.id)}"
+                ${state.selectedAccountIds.has(item.id) ? "checked" : ""}
+              />
+              <span class="sr-only">选择账号 ${escapeHtml(item.email)}</span>
+            </label>
+          </td>
           <td data-label="状态">${statusPill(item.status, item.blacklisted)}</td>
           <td data-label="邮箱">
             <strong class="table-title">${escapeHtml(item.email)}</strong>
             <div class="pill-row">
               <span class="pill ${item.enabled ? "ok" : "warn"}">${item.enabled ? "启用" : "停用"}</span>
               <span class="pill">${item.autoRefresh ? "自动续期" : "手动续期"}</span>
+              <span class="pill">${escapeHtml(regionLabel(item.region))}</span>
             </div>
             <div class="table-subline">${escapeHtml(item.notes || "无备注")}</div>
             <div class="table-subline">${escapeHtml(item.proxyPreview ? `代理: ${item.proxyPreview}` : "代理: 直连")}</div>
           </td>
           <td class="table-stat" data-label="Session">
             <strong class="mono">${escapeHtml(item.sessionIdPreview || "—")}</strong>
+            <div class="table-subline">地区: ${escapeHtml(regionLabel(item.region))}</div>
             <div class="table-subline">刷新: ${escapeHtml(formatTime(item.sessionUpdatedAt))}</div>
           </td>
           <td class="table-stat" data-label="并发">
@@ -400,7 +591,7 @@ function renderAccounts(accounts) {
           </td>
           <td class="table-stat" data-label="使用 / 错误">
             <strong>成功 ${escapeHtml(item.successCount)} / 失败 ${escapeHtml(item.failureCount)}</strong>
-            <div class="table-subline">${escapeHtml(item.lastError || item.blacklistedReason || "无异常")}</div>
+            <div class="table-subline">${escapeHtml(formatAccountIssue(item))}</div>
           </td>
           <td data-label="操作">
             <div class="table-actions">
@@ -419,9 +610,11 @@ function renderAccounts(accounts) {
       `
     )
     .join("");
+  syncAccountSelectionUi();
 }
 
-function renderKeys(keys) {
+function renderKeys(keys, options = {}) {
+  const animate = options.animate !== false;
   state.keysById = new Map(keys.map((item) => [item.id, item]));
   if (!keys.length) {
     refs.keysTableBody.innerHTML = emptyTableRow(5, "暂无 API Key，建议先创建一个调用方密钥并限制它的能力范围。");
@@ -431,7 +624,7 @@ function renderKeys(keys) {
   refs.keysTableBody.innerHTML = keys
     .map(
       (item, index) => `
-        <tr class="motion-item" style="--item-index:${index}">
+        <tr class="${animate ? "motion-item" : ""}"${animate ? ` style="--item-index:${index}"` : ""}>
           <td data-label="名称">
             <strong class="table-title">${escapeHtml(item.name)}</strong>
             <div class="pill-row">
@@ -466,15 +659,112 @@ function renderKeys(keys) {
     .join("");
 }
 
-async function loadOverview() {
+async function loadOverview(options = {}) {
+  const animate = options.animate !== false;
   const overview = await apiFetch("/api/admin/overview");
   state.overview = overview;
   state.user = overview.user;
   refs.userSummary.textContent = `当前登录: ${overview.user.username} | 登录提供方: ${overview.loginProvider} | Session TTL: ${overview.settings.sessionTtlMinutes} 分钟`;
-  renderMetrics(overview);
+  renderMetrics(overview, { animate });
   renderOverviewSignals(overview);
-  renderAccounts(overview.accounts || []);
-  renderKeys(overview.apiKeys || []);
+  if (options.renderKeys !== false) {
+    renderKeys(overview.apiKeys || [], { animate });
+  }
+}
+
+async function loadAccounts(options = {}) {
+  const silent = options.silent === true;
+  const animate = options.animate !== false && !silent;
+  const page = Number(options.page || state.accountsPagination.page || 1);
+  const pageSize = Number(options.pageSize || state.accountsPagination.pageSize || 10);
+  const statusFilter = String(options.statusFilter || state.accountsStatusFilter || "all");
+  const params = new URLSearchParams({
+    page: String(page),
+    pageSize: String(pageSize),
+  });
+  if (statusFilter !== "all") {
+    params.set("status", statusFilter);
+  }
+  const previous = {
+    html: refs.accountsTableBody.innerHTML,
+    meta: refs.accountsTableMeta.textContent,
+    indicator: refs.accountsPageIndicator.textContent,
+    prevDisabled: refs.accountsPagePrev.disabled,
+    nextDisabled: refs.accountsPageNext.disabled,
+    pageSize: state.accountsPagination.pageSize,
+    pagination: { ...state.accountsPagination },
+    statusFilter: state.accountsStatusFilter,
+    accountsById: new Map(state.accountsById),
+  };
+
+  if (silent) {
+    refs.accountsTableMeta.textContent = `正在同步${accountStatusFilterLabel(statusFilter)}...`;
+    refs.accountsPageIndicator.textContent = "更新中";
+    refs.accountsPagePrev.disabled = true;
+    refs.accountsPageNext.disabled = true;
+  } else {
+    setAccountsTableLoading();
+  }
+
+  try {
+    const payload = await apiFetch(`/api/admin/accounts?${params.toString()}`);
+    renderAccounts(payload.items || [], { animate });
+    syncAccountsPagination(payload);
+  } catch (error) {
+    refs.accountsTableBody.innerHTML = previous.html;
+    refs.accountsTableMeta.textContent = previous.meta;
+    refs.accountsPageIndicator.textContent = previous.indicator;
+    refs.accountsPagePrev.disabled = previous.prevDisabled;
+    refs.accountsPageNext.disabled = previous.nextDisabled;
+    refs.accountsPageSize.value = String(previous.pageSize);
+    state.accountsPagination = previous.pagination;
+    state.accountsStatusFilter = previous.statusFilter;
+    refs.accountsStatusFilter.value = previous.statusFilter;
+    state.accountsById = previous.accountsById;
+    syncAccountSelectionUi();
+    throw error;
+  }
+}
+
+async function loadOutboundLogs() {
+  const payload = await apiFetch("/api/admin/logs/outbound?limit=120");
+  renderOutboundLogs(payload);
+}
+
+async function reloadDashboard(options = {}) {
+  const targetPage = options.resetAccountPage ? 1 : state.accountsPagination.page;
+  const refreshOverview = options.refreshOverview !== false;
+  const refreshAccounts = options.refreshAccounts !== false;
+  const refreshLogs = options.refreshLogs === true;
+  const silent = options.silent === true;
+  const [overviewResult, accountsResult, logsResult] = await Promise.allSettled([
+    refreshOverview
+      ? loadOverview({
+          animate: !silent,
+          renderKeys: options.renderKeys !== false,
+        })
+      : Promise.resolve(),
+    refreshAccounts
+      ? loadAccounts({
+          page: targetPage,
+          pageSize: state.accountsPagination.pageSize,
+          statusFilter: state.accountsStatusFilter,
+          silent,
+          animate: !silent,
+        })
+      : Promise.resolve(),
+    refreshLogs ? loadOutboundLogs() : Promise.resolve(),
+  ]);
+
+  if (refreshLogs && logsResult.status === "rejected") {
+    renderOutboundLogError(logsResult.reason);
+  }
+  if (refreshOverview && overviewResult.status === "rejected") {
+    throw overviewResult.reason;
+  }
+  if (refreshAccounts && accountsResult.status === "rejected") {
+    throw accountsResult.reason;
+  }
 }
 
 async function bootstrap() {
@@ -482,7 +772,7 @@ async function bootstrap() {
     const auth = await apiFetch("/api/admin/auth/me");
     state.user = auth.user;
     showApp();
-    await loadOverview();
+    await reloadDashboard({ resetAccountPage: true, refreshLogs: true });
   } catch {
     showLogin();
   }
@@ -505,7 +795,7 @@ refs.loginForm.addEventListener("submit", async (event) => {
     showApp();
     setNotice("登录成功", "ok");
     refs.loginForm.reset();
-    await loadOverview();
+    await reloadDashboard({ resetAccountPage: true, refreshLogs: true });
   } catch (error) {
     setNotice(error.message, "danger");
   }
@@ -515,17 +805,21 @@ refs.accountForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const submitter = event.submitter || refs.accountForm.querySelector('button[type="submit"]');
   const accountId = document.getElementById("account-id").value;
+  const sessionId = document.getElementById("account-session-id").value.trim();
   const payload = {
     email: document.getElementById("account-email").value.trim(),
     password: document.getElementById("account-password").value,
-    sessionId: document.getElementById("account-session-id").value.trim(),
     proxy: document.getElementById("account-proxy").value.trim(),
+    region: document.getElementById("account-region").value,
     maxConcurrency: Number(document.getElementById("account-max-concurrency").value || 2),
     enabled: document.getElementById("account-enabled").checked,
     autoRefresh: document.getElementById("account-auto-refresh").checked,
     notes: document.getElementById("account-notes").value.trim(),
     clearSession: state.clearSessionOnSave,
   };
+  if (sessionId) {
+    payload.sessionId = sessionId;
+  }
 
   try {
     await runWithButton(submitter, accountId ? "更新中..." : "创建中...", async () => {
@@ -537,7 +831,7 @@ refs.accountForm.addEventListener("submit", async (event) => {
     setNotice(accountId ? "账号已更新" : "账号已创建", "ok");
     appendLog(accountId ? "更新账号" : "创建账号", payload);
     resetAccountForm();
-    await loadOverview();
+    await reloadDashboard({ resetAccountPage: !accountId, silent: true, renderKeys: false });
   } catch (error) {
     setNotice(error.message, "danger");
   }
@@ -549,6 +843,7 @@ refs.accountImportForm.addEventListener("submit", async (event) => {
   const payload = {
     text: document.getElementById("account-import-text").value,
     defaultProxy: document.getElementById("account-import-default-proxy").value.trim(),
+    defaultRegion: document.getElementById("account-import-default-region").value,
     maxConcurrency: Number(document.getElementById("account-import-max-concurrency").value || 2),
     enabled: document.getElementById("account-import-enabled").checked,
     autoRefresh: document.getElementById("account-import-auto-refresh").checked,
@@ -571,7 +866,7 @@ refs.accountImportForm.addEventListener("submit", async (event) => {
     if (!result.failedCount) {
       document.getElementById("account-import-text").value = "";
     }
-    await loadOverview();
+    await reloadDashboard({ resetAccountPage: true, silent: true, renderKeys: false });
   } catch (error) {
     setNotice(error.message, "danger");
   }
@@ -603,7 +898,7 @@ refs.keyForm.addEventListener("submit", async (event) => {
     }
     setNotice(keyId ? "API Key 已更新" : "API Key 已创建，完整密钥请直接在列表中复制", "ok");
     resetKeyForm();
-    await loadOverview();
+    await loadOverview({ animate: false });
     revealElement(refs.keysTableBody);
   } catch (error) {
     setNotice(error.message, "danger");
@@ -627,7 +922,6 @@ refs.passwordForm.addEventListener("submit", async (event) => {
     refs.passwordForm.reset();
     setNotice("管理员密码已更新", "ok");
     appendLog("修改管理员密码", "密码修改成功");
-    await loadOverview();
   } catch (error) {
     setNotice(error.message, "danger");
   }
@@ -636,9 +930,9 @@ refs.passwordForm.addEventListener("submit", async (event) => {
 document.getElementById("reload-overview").addEventListener("click", async (event) => {
   try {
     await runWithButton(event.currentTarget, "刷新中...", async () => {
-      await loadOverview();
+      await reloadDashboard({ refreshLogs: true });
     });
-    setNotice("总览已刷新", "ok");
+    setNotice("总览和账号列表已刷新", "ok");
   } catch (error) {
     setNotice(error.message, "danger");
   }
@@ -653,6 +947,18 @@ document.getElementById("logout-btn").addEventListener("click", async (event) =>
     state.user = null;
     setNotice("已退出登录", "ok");
   } catch (error) {
+    setNotice(error.message, "danger");
+  }
+});
+
+refs.reloadOutboundLogsButton.addEventListener("click", async (event) => {
+  try {
+    await runWithButton(event.currentTarget, "刷新中...", async () => {
+      await loadOutboundLogs();
+    });
+    setNotice("调用日志已刷新", "ok");
+  } catch (error) {
+    renderOutboundLogError(error);
     setNotice(error.message, "danger");
   }
 });
@@ -673,6 +979,202 @@ document.getElementById("clear-account-session").addEventListener("click", () =>
   document.getElementById("account-session-id").value = "";
   state.clearSessionOnSave = true;
   setNotice("已标记为清空 Session，保存后生效", "warn");
+});
+
+refs.accountsSelectAll.addEventListener("change", (event) => {
+  const checked = Boolean(event.currentTarget.checked);
+  const visibleIds = currentVisibleAccountIds();
+  visibleIds.forEach((id) => {
+    if (checked) {
+      state.selectedAccountIds.add(id);
+    } else {
+      state.selectedAccountIds.delete(id);
+    }
+  });
+  refs.accountsTableBody
+    .querySelectorAll('input[data-account-select]')
+    .forEach((input) => {
+      input.checked = checked;
+    });
+  syncAccountSelectionUi();
+});
+
+refs.accountsBatchApplyAll.addEventListener("change", () => {
+  syncAccountSelectionUi();
+});
+
+refs.accountsBatchProxyMode.addEventListener("change", () => {
+  syncBatchProxyInputState();
+});
+
+refs.accountsBatchApplyButton.addEventListener("click", async (event) => {
+  try {
+    const payload = resolveBatchAccountTarget();
+    const proxyMode = refs.accountsBatchProxyMode.value;
+    if (proxyMode === "set") {
+      const proxy = refs.accountsBatchProxy.value.trim();
+      if (!proxy) {
+        throw new Error("请输入要批量设置的代理地址");
+      }
+      payload.proxy = proxy;
+    } else if (proxyMode === "clear") {
+      payload.proxy = "";
+    }
+
+    const region = refs.accountsBatchRegion.value;
+    if (region !== "ignore") {
+      payload.region = region;
+    }
+
+    if (payload.proxy === undefined && payload.region === undefined) {
+      throw new Error("请至少选择一个批量修改项");
+    }
+
+    const result = await runWithButton(event.currentTarget, "应用中...", async () =>
+      apiFetch("/api/admin/accounts/batch/update", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      })
+    );
+
+    appendLog("批量修改账号", result);
+    setNotice(
+      `批量修改完成：命中 ${result.matchedCount} 个账号，更新 ${result.updatedCount} 个，地区跳过 ${result.regionSkippedCount} 个`,
+      result.regionSkippedCount ? "warn" : "ok"
+    );
+    state.selectedAccountIds.clear();
+    refs.accountsBatchApplyAll.checked = false;
+    refs.accountsBatchProxyMode.value = "ignore";
+    refs.accountsBatchRegion.value = "ignore";
+    syncBatchProxyInputState();
+    await reloadDashboard({ resetAccountPage: false, silent: true, renderKeys: false });
+  } catch (error) {
+    setNotice(error.message, "danger");
+  }
+});
+
+refs.accountsBatchDeleteButton.addEventListener("click", async (event) => {
+  try {
+    const payload = resolveBatchAccountTarget();
+    const scopeText = payload.applyToAll
+      ? `全部 ${state.accountsPagination.total || 0} 个账号`
+      : `${payload.ids.length} 个账号`;
+    if (!window.confirm(`确认删除${scopeText}吗？此操作不可恢复。`)) return;
+
+    const result = await runWithButton(event.currentTarget, "删除中...", async () =>
+      apiFetch("/api/admin/accounts/batch/delete", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      })
+    );
+
+    appendLog("批量删除账号", result);
+    setNotice(`批量删除完成：已删除 ${result.deletedCount} 个账号`, "warn");
+    state.selectedAccountIds.clear();
+    refs.accountsBatchApplyAll.checked = false;
+    resetAccountForm();
+    await reloadDashboard({ resetAccountPage: true, silent: true, renderKeys: false });
+  } catch (error) {
+    setNotice(error.message, "danger");
+  }
+});
+
+refs.accountsPagePrev.addEventListener("click", async (event) => {
+  if (state.accountsPagination.page <= 1) return;
+
+  try {
+    await runWithButton(event.currentTarget, "上一页...", async () => {
+      await loadAccounts({ page: state.accountsPagination.page - 1, silent: true });
+    });
+  } catch (error) {
+    setNotice(error.message, "danger");
+  }
+});
+
+refs.accountsPageNext.addEventListener("click", async (event) => {
+  if (state.accountsPagination.page >= state.accountsPagination.totalPages) return;
+
+  try {
+    await runWithButton(event.currentTarget, "下一页...", async () => {
+      await loadAccounts({ page: state.accountsPagination.page + 1, silent: true });
+    });
+  } catch (error) {
+    setNotice(error.message, "danger");
+  }
+});
+
+refs.accountsPageSize.addEventListener("change", async (event) => {
+  const previousPageSize = state.accountsPagination.pageSize;
+  const pageSize = Number(event.currentTarget.value || previousPageSize || 10);
+
+  try {
+    await loadAccounts({ page: 1, pageSize, silent: true });
+    setNotice(`账号列表已切换为每页 ${pageSize} 条`, "ok");
+  } catch (error) {
+    refs.accountsPageSize.value = String(previousPageSize);
+    setNotice(error.message, "danger");
+  }
+});
+
+refs.accountsStatusFilter.addEventListener("change", async (event) => {
+  const previousFilter = state.accountsStatusFilter;
+  const statusFilter = String(event.currentTarget.value || "all");
+
+  try {
+    await loadAccounts({ page: 1, pageSize: state.accountsPagination.pageSize, statusFilter, silent: true });
+    setNotice(`${accountStatusFilterLabel(statusFilter)}筛选已生效`, "ok");
+  } catch (error) {
+    refs.accountsStatusFilter.value = previousFilter;
+    setNotice(error.message, "danger");
+  }
+});
+
+refs.accountsRefreshInvalidButton.addEventListener("click", async (event) => {
+  try {
+    const result = await runWithButton(event.currentTarget, "刷新中...", async () =>
+      apiFetch("/api/admin/accounts/batch/refresh-invalid-session", {
+        method: "POST",
+      })
+    );
+    appendLog("一键刷新失效账号 Session", result);
+    setNotice(
+      `失效账号刷新完成：命中 ${result.matchedCount} 个，成功 ${result.refreshedCount} 个，失败 ${result.failedCount} 个`,
+      result.failedCount ? "warn" : "ok"
+    );
+    await reloadDashboard({ resetAccountPage: false, silent: true, renderKeys: false });
+  } catch (error) {
+    setNotice(error.message, "danger");
+  }
+});
+
+refs.accountsValidateAllButton.addEventListener("click", async (event) => {
+  try {
+    const result = await runWithButton(event.currentTarget, "校验中...", async () =>
+      apiFetch("/api/admin/accounts/batch/validate-session", {
+        method: "POST",
+      })
+    );
+    appendLog("一键校验全部账号", result);
+    setNotice(
+      `全部账号校验完成：总计 ${result.matchedCount} 个，有效 ${result.validCount} 个，失效 ${result.invalidCount} 个，异常 ${result.failedCount} 个`,
+      result.failedCount ? "warn" : "ok"
+    );
+    await reloadDashboard({ resetAccountPage: false, silent: true, renderKeys: false });
+  } catch (error) {
+    setNotice(error.message, "danger");
+  }
+});
+
+refs.accountsTableBody.addEventListener("change", (event) => {
+  const input = event.target.closest('input[data-account-select]');
+  if (!input) return;
+
+  if (input.checked) {
+    state.selectedAccountIds.add(input.value);
+  } else {
+    state.selectedAccountIds.delete(input.value);
+  }
+  syncAccountSelectionUi();
 });
 
 refs.accountsTableBody.addEventListener("click", async (event) => {
@@ -696,7 +1198,7 @@ refs.accountsTableBody.addEventListener("click", async (event) => {
       );
       appendLog(`刷新账号 ${item.email}`, result.logs || result);
       setNotice(`账号 ${item.email} Session 已刷新`, "ok");
-      await loadOverview();
+      await reloadDashboard({ silent: true, renderKeys: false });
       return;
     }
 
@@ -706,7 +1208,7 @@ refs.accountsTableBody.addEventListener("click", async (event) => {
       );
       appendLog(`校验账号 ${item.email}`, result);
       setNotice(result.valid ? `账号 ${item.email} Session 有效` : result.reason, result.valid ? "ok" : "danger");
-      await loadOverview();
+      await reloadDashboard({ silent: true, renderKeys: false });
       return;
     }
 
@@ -721,7 +1223,7 @@ refs.accountsTableBody.addEventListener("click", async (event) => {
       });
       appendLog(`拉黑账号 ${item.email}`, reason);
       setNotice(`账号 ${item.email} 已拉黑`, "warn");
-      await loadOverview();
+      await reloadDashboard({ silent: true, renderKeys: false });
       return;
     }
 
@@ -731,7 +1233,7 @@ refs.accountsTableBody.addEventListener("click", async (event) => {
       });
       appendLog(`解除拉黑 ${item.email}`, "已恢复为可调度状态");
       setNotice(`账号 ${item.email} 已解除拉黑`, "ok");
-      await loadOverview();
+      await reloadDashboard({ silent: true, renderKeys: false });
       return;
     }
 
@@ -740,10 +1242,11 @@ refs.accountsTableBody.addEventListener("click", async (event) => {
       await runWithButton(button, "删除中...", async () => {
         await apiFetch(`/api/admin/accounts/${id}`, { method: "DELETE" });
       });
+      state.selectedAccountIds.delete(id);
       appendLog(`删除账号 ${item.email}`, "账号已删除");
       setNotice(`账号 ${item.email} 已删除`, "warn");
       resetAccountForm();
-      await loadOverview();
+      await reloadDashboard({ silent: true, renderKeys: false });
     }
   } catch (error) {
     setNotice(error.message, "danger");
@@ -779,7 +1282,7 @@ refs.keysTableBody.addEventListener("click", async (event) => {
       );
       appendLog(`重置 API Key ${item.name}`, result.apiKey);
       setNotice(`API Key ${item.name} 已重置，完整密钥请直接在列表中复制`, "warn");
-      await loadOverview();
+      await loadOverview({ animate: false });
       revealElement(refs.keysTableBody);
       return;
     }
@@ -792,7 +1295,7 @@ refs.keysTableBody.addEventListener("click", async (event) => {
       appendLog(`删除 API Key ${item.name}`, "API Key 已删除");
       setNotice(`API Key ${item.name} 已删除`, "warn");
       resetKeyForm();
-      await loadOverview();
+      await loadOverview({ animate: false });
     }
   } catch (error) {
     setNotice(error.message, "danger");
@@ -801,4 +1304,6 @@ refs.keysTableBody.addEventListener("click", async (event) => {
 
 resetAccountForm();
 resetKeyForm();
+syncBatchProxyInputState();
+syncAccountSelectionUi();
 bootstrap();

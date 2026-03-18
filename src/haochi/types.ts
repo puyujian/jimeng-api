@@ -1,4 +1,5 @@
 export type PoolAbility = "images" | "videos" | "chat" | "token";
+export type PoolAccountRegion = "cn" | "us" | "hk" | "jp" | "sg";
 
 export type AccountStatus =
   | "idle"
@@ -64,6 +65,7 @@ export interface PoolAccount {
   blacklisted: boolean;
   blacklistedReason: string | null;
   blacklistedAt: string | null;
+  blacklistReleaseAt: string | null;
   lastError: string | null;
   lastLoginAt: string | null;
   lastValidatedAt: string | null;

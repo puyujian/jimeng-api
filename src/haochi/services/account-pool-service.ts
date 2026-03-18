@@ -1,6 +1,7 @@
 import API_EX from "@/api/consts/exceptions.ts";
 import { getCredit, getTokenLiveStatus, receiveCredit } from "@/api/controllers/core.ts";
 import SYSTEM_EX from "@/lib/consts/exceptions.ts";
+import APIException from "@/lib/exceptions/APIException.ts";
 import Exception from "@/lib/exceptions/Exception.ts";
 import logger from "@/lib/logger.ts";
 import HaochiStateStore from "@/haochi/storage/state-store.ts";
@@ -14,6 +15,7 @@ import type {
   LoginProvider,
   PoolAbility,
   PoolAccount,
+  PoolAccountRegion,
 } from "@/haochi/types.ts";
 import {
   ALL_ABILITIES,
@@ -88,6 +90,96 @@ function sanitizeSessionTokens(input: Partial<AccountSessionTokens> | null | und
     s_v_web_id: next.s_v_web_id || null,
     _tea_web_id: next._tea_web_id || null,
   };
+}
+
+const REGION_PREFIX_MAP: Record<PoolAccountRegion, string> = {
+  cn: "",
+  us: "us-",
+  hk: "hk-",
+  jp: "jp-",
+  sg: "sg-",
+};
+
+function extractRegionFromTokenValue(value: string | null | undefined): PoolAccountRegion | null {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw.startsWith("us-")) return "us";
+  if (raw.startsWith("hk-")) return "hk";
+  if (raw.startsWith("jp-")) return "jp";
+  if (raw.startsWith("sg-")) return "sg";
+  return null;
+}
+
+function resolveAccountRegion(account: Pick<PoolAccount, "sessionTokens">): PoolAccountRegion {
+  return (
+    extractRegionFromTokenValue(
+      account.sessionTokens?.sessionid ||
+        account.sessionTokens?.sessionid_ss ||
+        account.sessionTokens?.sid_tt ||
+        null
+    ) || "cn"
+  );
+}
+
+function normalizeAccountRegion(
+  value: any,
+  fallback: PoolAccountRegion = "cn"
+): PoolAccountRegion {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "us" || normalized === "us-") return "us";
+  if (normalized === "hk" || normalized === "hk-") return "hk";
+  if (normalized === "jp" || normalized === "jp-") return "jp";
+  if (normalized === "sg" || normalized === "sg-") return "sg";
+  if (normalized === "cn" || normalized === "cn-") return "cn";
+  return fallback;
+}
+
+const SHANGHAI_TZ_OFFSET_MS = 8 * 60 * 60 * 1000;
+const SHANGHAI_DAY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Shanghai",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+function parseIsoMs(value: string | null | undefined) {
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function nextShanghaiMidnightIso(base = new Date()) {
+  const parts = SHANGHAI_DAY_FORMATTER.formatToParts(base);
+  const year = Number(parts.find((item) => item.type === "year")?.value || "0");
+  const month = Number(parts.find((item) => item.type === "month")?.value || "0");
+  const day = Number(parts.find((item) => item.type === "day")?.value || "0");
+  return new Date(Date.UTC(year, month - 1, day + 1) - SHANGHAI_TZ_OFFSET_MS).toISOString();
+}
+
+function stripRegionPrefix(token: string | null | undefined) {
+  return String(token || "")
+    .trim()
+    .replace(/^(us|hk|jp|sg)-/i, "");
+}
+
+function applyRegionToSessionValue(
+  token: string | null | undefined,
+  region: PoolAccountRegion
+) {
+  const raw = stripRegionPrefix(token);
+  if (!raw) return null;
+  return `${REGION_PREFIX_MAP[region]}${raw}`;
+}
+
+function applyRegionToSessionTokens(
+  input: Partial<AccountSessionTokens> | null | undefined,
+  region: PoolAccountRegion
+) {
+  const next = sanitizeSessionTokens(input);
+  return sanitizeSessionTokens({
+    ...next,
+    sessionid: applyRegionToSessionValue(next.sessionid, region),
+    sessionid_ss: applyRegionToSessionValue(next.sessionid_ss, region),
+    sid_tt: applyRegionToSessionValue(next.sid_tt, region),
+  });
 }
 
 function detectImportDelimiter(line: string) {
@@ -188,6 +280,63 @@ function statusPriority(status: AccountStatus) {
   }
 }
 
+function validationStatusPriority(status: PoolAccount["lastValidationStatus"]) {
+  switch (status) {
+    case "valid":
+      return 1;
+    case "unknown":
+      return 2;
+    case "invalid":
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+function effectiveValidationStatus(account: Pick<PoolAccount, "lastValidationStatus" | "lastValidatedAt" | "sessionUpdatedAt">) {
+  if (account.lastValidationStatus !== "valid") {
+    return account.lastValidationStatus;
+  }
+
+  const validatedAtMs = Date.parse(String(account.lastValidatedAt || ""));
+  if (!Number.isFinite(validatedAtMs)) {
+    return "unknown";
+  }
+
+  const sessionUpdatedAtMs = Date.parse(String(account.sessionUpdatedAt || ""));
+  if (Number.isFinite(sessionUpdatedAtMs) && validatedAtMs < sessionUpdatedAtMs) {
+    return "unknown";
+  }
+
+  return "valid";
+}
+
+type AccountListStatusFilter = "all" | "healthy" | "invalid" | "blacklisted";
+
+function normalizeAccountListStatusFilter(value: any): AccountListStatusFilter {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "healthy") return "healthy";
+  if (normalized === "invalid" || normalized === "expired") return "invalid";
+  if (normalized === "blacklisted") return "blacklisted";
+  return "all";
+}
+
+function matchesAccountStatusFilter(
+  account: Pick<PoolAccount, "status" | "blacklisted">,
+  filter: AccountListStatusFilter
+) {
+  if (filter === "healthy") {
+    return !account.blacklisted && account.status === "healthy";
+  }
+  if (filter === "invalid") {
+    return !account.blacklisted && ["invalid", "expired"].includes(account.status);
+  }
+  if (filter === "blacklisted") {
+    return account.blacklisted || account.status === "blacklisted";
+  }
+  return true;
+}
+
 export default class AccountPoolService {
   readonly store: HaochiStateStore;
   readonly loginProvider: LoginProvider;
@@ -273,6 +422,7 @@ export default class AccountPoolService {
     return {
       id: account.id,
       email: account.email,
+      region: resolveAccountRegion(account),
       proxy: normalizeProxyUrl(account.proxy),
       proxyPreview: maskProxyUrl(account.proxy) || null,
       enabled: account.enabled,
@@ -283,6 +433,7 @@ export default class AccountPoolService {
       blacklisted: account.blacklisted,
       blacklistedReason: account.blacklistedReason,
       blacklistedAt: account.blacklistedAt,
+      blacklistReleaseAt: account.blacklistReleaseAt,
       lastError: account.lastError,
       lastLoginAt: account.lastLoginAt,
       lastValidatedAt: account.lastValidatedAt,
@@ -332,6 +483,39 @@ export default class AccountPoolService {
 
   #buildRequestToken(account: PoolAccount) {
     return attachProxyToToken(primaryToken(account), account.proxy);
+  }
+
+  #resolveBatchAccountIds(payload: any) {
+    const state = this.store.getState();
+    const applyToAll = parseBoolean(payload?.applyToAll, false);
+    if (applyToAll) {
+      return {
+        applyToAll,
+        ids: state.accounts.map((item) => item.id),
+      };
+    }
+
+    const ids: string[] = Array.isArray(payload?.ids)
+      ? Array.from(
+          new Set(
+            payload.ids
+              .map((item: any) => String(item || "").trim())
+              .filter(Boolean)
+          )
+        )
+      : [];
+    if (!ids.length) throw createHttpError("请先选择要批量处理的账号", 400);
+
+    const accountIds = new Set(state.accounts.map((item) => item.id));
+    const missingIds = ids.filter((id) => !accountIds.has(id));
+    if (missingIds.length) {
+      throw createHttpError(`以下账号不存在: ${missingIds.join(", ")}`, 404);
+    }
+
+    return {
+      applyToAll,
+      ids,
+    };
   }
 
   #requireAccount(accountId: string) {
@@ -396,12 +580,39 @@ export default class AccountPoolService {
     const message = String(error?.message || error || "");
     const compare = typeof error?.compare === "function" ? error.compare.bind(error) : null;
 
+    if (/登录失效，自动刷新失败/i.test(message)) {
+      return {
+        retryable: true,
+        blacklist: false,
+        status: "error" as AccountStatus,
+        reason: message,
+      };
+    }
+
     if (compare?.(API_EX.API_TOKEN_EXPIRES) || /登录失效|token已失效|session.*失效/i.test(message)) {
       return {
         retryable: true,
-        blacklist: true,
+        blacklist: false,
         status: "invalid" as AccountStatus,
         reason: message || "Session 已失效",
+        blacklistReleaseAt: null,
+      };
+    }
+
+    if (
+      /proxy connection ended before receiving connect response/i.test(message) ||
+      /err_empty_response/i.test(message) ||
+      /err_connection_closed/i.test(message) ||
+      /econnreset/i.test(message) ||
+      /failed to connect to upstream/i.test(message) ||
+      /socket disconnected before secure tls connection was established/i.test(message)
+    ) {
+      return {
+        retryable: true,
+        blacklist: false,
+        status: "error" as AccountStatus,
+        reason: message || "代理或网络异常",
+        blacklistReleaseAt: null,
       };
     }
 
@@ -415,6 +626,7 @@ export default class AccountPoolService {
         blacklist: true,
         status: "insufficient_credit" as AccountStatus,
         reason: message || "积分不足",
+        blacklistReleaseAt: nextShanghaiMidnightIso(),
       };
     }
 
@@ -423,6 +635,7 @@ export default class AccountPoolService {
       blacklist: false,
       status: "error" as AccountStatus,
       reason: message || "请求失败",
+      blacklistReleaseAt: null,
     };
   }
 
@@ -435,6 +648,25 @@ export default class AccountPoolService {
       .getState()
       .accounts.map((item) => this.#publicAccount(item))
       .sort((a, b) => a.email.localeCompare(b.email));
+  }
+
+  listAccountsPage(options: { page?: number; pageSize?: number; status?: any } = {}) {
+    const statusFilter = normalizeAccountListStatusFilter(options.status);
+    const items = this.listAccounts().filter((item) => matchesAccountStatusFilter(item, statusFilter));
+    const pageSize = clampNumber(options.pageSize, 1, 100, 10);
+    const total = items.length;
+    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
+    const page = clampNumber(options.page, 1, totalPages, 1);
+    const start = (page - 1) * pageSize;
+
+    return {
+      items: items.slice(start, start + pageSize),
+      page,
+      pageSize,
+      total,
+      totalPages,
+      status: statusFilter,
+    };
   }
 
   listApiKeys() {
@@ -450,6 +682,7 @@ export default class AccountPoolService {
     const blacklisted = state.accounts.filter((item) => item.blacklisted).length;
     const withSession = state.accounts.filter((item) => !!primaryToken(item)).length;
     const activeLeases = Array.from(this.leaseMap.values()).reduce((sum, item) => sum + item.size, 0);
+    const totalCapacity = state.accounts.reduce((sum, item) => sum + Number(item.maxConcurrency || 0), 0);
 
     return {
       settings: state.settings,
@@ -461,8 +694,8 @@ export default class AccountPoolService {
         blacklisted,
         withSession,
         activeLeases,
+        totalCapacity,
       },
-      accounts: this.listAccounts(),
       apiKeys: this.listApiKeys(),
     };
   }
@@ -475,6 +708,10 @@ export default class AccountPoolService {
     const defaultProxy =
       payload?.defaultProxy !== undefined || payload?.proxy !== undefined
         ? normalizeProxyUrl(payload?.defaultProxy ?? payload?.proxy)
+        : null;
+    const defaultRegion =
+      payload?.defaultRegion !== undefined || payload?.region !== undefined
+        ? normalizeAccountRegion(payload?.defaultRegion ?? payload?.region)
         : null;
     const defaultEnabled = parseBoolean(payload?.enabled, true);
     const defaultAutoRefresh = parseBoolean(payload?.autoRefresh, true);
@@ -529,6 +766,7 @@ export default class AccountPoolService {
           };
           if (parsed.password) nextPayload.password = parsed.password;
           if (parsed.hasProxyField || defaultProxy !== null) nextPayload.proxy = proxyValue;
+          if (defaultRegion !== null) nextPayload.region = defaultRegion;
           if (parsed.hasNotesField) nextPayload.notes = parsed.notes;
           if (parsed.hasSessionField && parsed.sessionId) nextPayload.sessionId = parsed.sessionId;
           items.push(this.updateAccount(existing.id, nextPayload));
@@ -542,6 +780,7 @@ export default class AccountPoolService {
             password: parsed.password,
             sessionId: parsed.sessionId,
             proxy: proxyValue,
+            region: defaultRegion,
             notes: parsed.notes,
             enabled: defaultEnabled,
             autoRefresh: defaultAutoRefresh,
@@ -579,6 +818,10 @@ export default class AccountPoolService {
 
     const now = nowIso();
     const sessionId = String(payload?.sessionId || "").trim();
+    const requestedRegion =
+      payload?.region !== undefined
+        ? normalizeAccountRegion(payload.region, extractRegionFromTokenValue(sessionId) || "cn")
+        : extractRegionFromTokenValue(sessionId) || "cn";
     const enabled = parseBoolean(payload?.enabled, true);
     const account: PoolAccount = {
       id: randomId("account"),
@@ -598,6 +841,7 @@ export default class AccountPoolService {
       blacklisted: false,
       blacklistedReason: null,
       blacklistedAt: null,
+      blacklistReleaseAt: null,
       lastError: null,
       lastLoginAt: null,
       lastValidatedAt: null,
@@ -605,11 +849,14 @@ export default class AccountPoolService {
       lastUsedAt: null,
       sessionUpdatedAt: sessionId ? now : null,
       sessionExpiresAt: sessionId ? this.#buildSessionExpiry() : null,
-      sessionTokens: sanitizeSessionTokens({
-        sessionid: sessionId || null,
-        sessionid_ss: sessionId || null,
-        sid_tt: sessionId || null,
-      }),
+      sessionTokens: applyRegionToSessionTokens(
+        {
+          sessionid: sessionId || null,
+          sessionid_ss: sessionId || null,
+          sid_tt: sessionId || null,
+        },
+        requestedRegion
+      ),
       userInfo: null,
       successCount: 0,
       failureCount: 0,
@@ -627,6 +874,7 @@ export default class AccountPoolService {
     const current = this.#requireAccount(accountId);
     const nextEmail = String(payload?.email || current.email).trim();
     if (!nextEmail) throw createHttpError("账号邮箱不能为空", 400);
+    const currentRegion = resolveAccountRegion(current);
     const duplicated = this.store
       .getState()
       .accounts.find(
@@ -661,6 +909,15 @@ export default class AccountPoolService {
         account.password = this.#storePassword(payload.password);
       }
 
+      const explicitRegion =
+        payload?.sessionId !== undefined
+          ? extractRegionFromTokenValue(String(payload.sessionId || "").trim())
+          : null;
+      const nextRegion =
+        payload?.region !== undefined
+          ? normalizeAccountRegion(payload.region, currentRegion)
+          : explicitRegion || currentRegion;
+
       if (payload?.clearSession) {
         account.sessionTokens = emptySessionTokens();
         account.sessionUpdatedAt = null;
@@ -668,20 +925,26 @@ export default class AccountPoolService {
         account.status = account.enabled ? "idle" : "disabled";
       } else if (payload?.sessionId !== undefined) {
         const sessionId = String(payload.sessionId || "").trim();
-        account.sessionTokens = sanitizeSessionTokens({
-          sessionid: sessionId || null,
-          sessionid_ss: sessionId || null,
-          sid_tt: sessionId || null,
-        });
+        account.sessionTokens = applyRegionToSessionTokens(
+          {
+            sessionid: sessionId || null,
+            sessionid_ss: sessionId || null,
+            sid_tt: sessionId || null,
+          },
+          nextRegion
+        );
         account.sessionUpdatedAt = sessionId ? nowIso() : null;
         account.sessionExpiresAt = sessionId ? this.#buildSessionExpiry() : null;
         if (!account.blacklisted) account.status = sessionId ? "healthy" : account.enabled ? "idle" : "disabled";
+      } else if (payload?.region !== undefined && primaryToken(account)) {
+        account.sessionTokens = applyRegionToSessionTokens(account.sessionTokens, nextRegion);
       }
 
       if (payload?.blacklisted === false) {
         account.blacklisted = false;
         account.blacklistedReason = null;
         account.blacklistedAt = null;
+        account.blacklistReleaseAt = null;
         if (account.enabled && primaryToken(account)) account.status = "healthy";
       }
 
@@ -692,12 +955,151 @@ export default class AccountPoolService {
     return this.#publicAccount(this.#requireAccount(accountId));
   }
 
+  updateAccountsBatch(payload: any) {
+    const { applyToAll, ids } = this.#resolveBatchAccountIds(payload);
+    const hasProxyUpdate = payload?.proxy !== undefined;
+    const hasRegionUpdate = payload?.region !== undefined;
+    if (!hasProxyUpdate && !hasRegionUpdate) {
+      throw createHttpError("请至少提供一个批量修改项", 400);
+    }
+
+    const nextProxy = hasProxyUpdate ? normalizeProxyUrl(payload.proxy) : null;
+    const nextRegion = hasRegionUpdate ? normalizeAccountRegion(payload.region) : "cn";
+    const selectedIds = new Set(ids);
+    let updatedCount = 0;
+    let regionUpdatedCount = 0;
+    let regionSkippedCount = 0;
+
+    this.store.update((state) => {
+      for (const account of state.accounts) {
+        if (!selectedIds.has(account.id)) continue;
+
+        let touched = false;
+        if (hasProxyUpdate) {
+          account.proxy = nextProxy;
+          touched = true;
+        }
+
+        if (hasRegionUpdate) {
+          if (primaryToken(account)) {
+            account.sessionTokens = applyRegionToSessionTokens(account.sessionTokens, nextRegion);
+            regionUpdatedCount += 1;
+            touched = true;
+          } else {
+            regionSkippedCount += 1;
+          }
+        }
+
+        if (!touched) continue;
+        account.updatedAt = nowIso();
+        updatedCount += 1;
+      }
+    });
+
+    return {
+      applyToAll,
+      matchedCount: ids.length,
+      updatedCount,
+      regionUpdatedCount,
+      regionSkippedCount,
+      proxyUpdated: hasProxyUpdate,
+    };
+  }
+
   deleteAccount(accountId: string) {
     this.store.update((state) => {
       state.accounts = state.accounts.filter((item) => item.id !== accountId);
     });
     this.leaseMap.delete(accountId);
     return { deleted: true };
+  }
+
+  deleteAccountsBatch(payload: any) {
+    const { applyToAll, ids } = this.#resolveBatchAccountIds(payload);
+    if (!ids.length) {
+      return {
+        applyToAll,
+        deletedCount: 0,
+      };
+    }
+
+    const selectedIds = new Set(ids);
+    this.store.update((state) => {
+      state.accounts = state.accounts.filter((item) => !selectedIds.has(item.id));
+    });
+    for (const id of ids) {
+      this.leaseMap.delete(id);
+    }
+    return {
+      applyToAll,
+      deletedCount: ids.length,
+    };
+  }
+
+  async refreshInvalidAccountsSessions() {
+    const candidates = this.store
+      .getState()
+      .accounts.filter((item) => matchesAccountStatusFilter(item, "invalid"));
+
+    const refreshed: Array<{ id: string; email: string }> = [];
+    const errors: Array<{ id: string; email: string; error: string }> = [];
+
+    for (const account of candidates) {
+      try {
+        await this.refreshAccountSession(account.id, "batch-refresh-invalid");
+        refreshed.push({
+          id: account.id,
+          email: account.email,
+        });
+      } catch (error: any) {
+        errors.push({
+          id: account.id,
+          email: account.email,
+          error: error?.message || String(error),
+        });
+      }
+    }
+
+    return {
+      matchedCount: candidates.length,
+      refreshedCount: refreshed.length,
+      failedCount: errors.length,
+      refreshed,
+      errors,
+    };
+  }
+
+  async validateAllAccountsSessions() {
+    const candidates = this.store.getState().accounts;
+    const results: Array<{ id: string; email: string; valid: boolean; reason: string }> = [];
+    const errors: Array<{ id: string; email: string; error: string }> = [];
+
+    for (const account of candidates) {
+      try {
+        const result = await this.validateAccountSession(account.id);
+        results.push({
+          id: account.id,
+          email: account.email,
+          valid: Boolean(result.valid),
+          reason: String(result.reason || ""),
+        });
+      } catch (error: any) {
+        errors.push({
+          id: account.id,
+          email: account.email,
+          error: error?.message || String(error),
+        });
+      }
+    }
+
+    return {
+      matchedCount: candidates.length,
+      validCount: results.filter((item) => item.valid).length,
+      invalidCount: results.filter((item) => !item.valid).length,
+      failedCount: errors.length,
+      results,
+      errors,
+    };
   }
 
   async refreshAccountSession(accountId: string, source = "manual") {
@@ -744,6 +1146,7 @@ export default class AccountPoolService {
         target.blacklisted = false;
         target.blacklistedReason = null;
         target.blacklistedAt = null;
+        target.blacklistReleaseAt = null;
         target.status = target.enabled ? "healthy" : "disabled";
         target.updatedAt = nowIso();
       });
@@ -827,6 +1230,7 @@ export default class AccountPoolService {
       target.blacklisted = true;
       target.blacklistedReason = String(reason || "已手动拉黑").trim();
       target.blacklistedAt = nowIso();
+      target.blacklistReleaseAt = null;
       target.status = "blacklisted";
       target.updatedAt = nowIso();
     });
@@ -840,6 +1244,7 @@ export default class AccountPoolService {
       target.blacklisted = false;
       target.blacklistedReason = null;
       target.blacklistedAt = null;
+      target.blacklistReleaseAt = null;
       target.status = target.enabled ? (primaryToken(target) ? "healthy" : "idle") : "disabled";
       target.updatedAt = nowIso();
     });
@@ -975,15 +1380,41 @@ export default class AccountPoolService {
     if (!stored.enabled) throw createHttpError(`账号 ${stored.email} 已禁用`, 403);
     if (stored.blacklisted) throw createHttpError(`账号 ${stored.email} 已被拉黑`, 409);
 
-    const materialized = this.#materializeAccount(stored);
-    if (!this.#isSessionExpiring(materialized) && materialized.lastValidationStatus !== "invalid") {
-      return materialized;
+    let materialized = this.#materializeAccount(stored);
+    const hasPrimaryToken = Boolean(primaryToken(materialized));
+    const canAutoRecover = Boolean(materialized.password && materialized.autoRefresh);
+    let validationStatus = effectiveValidationStatus(materialized);
+
+    if (!hasPrimaryToken) {
+      if (!canAutoRecover) {
+        throw createHttpError(`账号 ${stored.email} 缺少 Session 且无法自动恢复`, 409);
+      }
+      await this.refreshAccountSession(accountId, trigger);
+      return this.#materializeAccount(this.#requireAccount(accountId));
     }
 
-    if (!materialized.password) {
-      if (!primaryToken(materialized)) {
-        throw createHttpError(`账号 ${stored.email} 缺少 Session 且没有密码，无法自动恢复`, 409);
+    if (this.loginProvider.name !== "mock" && validationStatus === "unknown") {
+      const validation = await this.validateAccountSession(accountId);
+      materialized = this.#materializeAccount(this.#requireAccount(accountId));
+      validationStatus = effectiveValidationStatus(materialized);
+      if (!validation.valid) {
+        if (!canAutoRecover) {
+          throw createHttpError(`账号 ${stored.email} Session 已失效且无法自动恢复`, 409);
+        }
       }
+    }
+
+    if (!this.#isSessionExpiring(materialized)) {
+      if (validationStatus === "invalid") {
+        if (!canAutoRecover) {
+          throw createHttpError(`账号 ${stored.email} Session 已失效且无法自动恢复`, 409);
+        }
+      } else {
+        return materialized;
+      }
+    }
+
+    if (!canAutoRecover) {
       return materialized;
     }
 
@@ -1024,15 +1455,130 @@ export default class AccountPoolService {
         target.blacklisted = true;
         target.blacklistedAt = nowIso();
         target.blacklistedReason = classified.reason;
+        target.blacklistReleaseAt = classified.blacklistReleaseAt || null;
         target.status = classified.status;
       } else if (!target.blacklisted) {
+        target.blacklistReleaseAt = null;
         target.status = classified.status;
       }
     });
     return classified;
   }
 
+  #releaseExpiredBlacklistedAccounts() {
+    const dueAccounts = this.store
+      .getState()
+      .accounts.filter((item) => item.blacklisted)
+      .filter((item) => {
+        const releaseAtMs = parseIsoMs(item.blacklistReleaseAt);
+        return releaseAtMs !== null && releaseAtMs <= Date.now();
+      })
+      .map((item) => ({
+        id: item.id,
+        email: item.email,
+      }));
+
+    if (!dueAccounts.length) return [];
+
+    const dueIds = new Set(dueAccounts.map((item) => item.id));
+    this.store.update((state) => {
+      for (const account of state.accounts) {
+        if (!dueIds.has(account.id)) continue;
+        account.blacklisted = false;
+        account.blacklistedReason = null;
+        account.blacklistedAt = null;
+        account.blacklistReleaseAt = null;
+        account.lastError = null;
+        account.status = account.enabled ? (primaryToken(account) ? "healthy" : "idle") : "disabled";
+        account.updatedAt = nowIso();
+      }
+    });
+
+    logger.info(
+      `自动解除次日恢复黑名单账号: ${dueAccounts.map((item) => item.email).join(", ")}`
+    );
+    return dueAccounts;
+  }
+
+  async #retryCurrentAccountAfterRefresh<T>(
+    accountId: string,
+    ability: PoolAbility,
+    apiKeyId: string,
+    handler: (token: string, context: { mode: "legacy" | "pool"; accountId?: string; apiKeyId?: string }) => Promise<T>,
+    error: any
+  ) {
+    const classified = this.#classifyAccountError(error);
+    if (!classified.retryable || classified.status !== "invalid") {
+      return {
+        recovered: false,
+        error,
+      } as const;
+    }
+
+    const account = this.#materializeAccount(this.#requireAccount(accountId));
+    if (!account.password || !account.autoRefresh) {
+      return {
+        recovered: false,
+        error,
+      } as const;
+    }
+
+    logger.warn(`账号 ${account.email} 命中登录失效，尝试自动刷新 Session 后重试`);
+
+    try {
+      await this.refreshAccountSession(accountId, `request-recover:${ability}`);
+    } catch (refreshError: any) {
+      logger.warn(
+        `账号 ${account.email} 自动刷新重试失败，准备切换下一个账号: ${refreshError?.message || refreshError}`
+      );
+      const refreshMessage = refreshError?.message || String(refreshError || error || "自动刷新重试失败");
+      return {
+        recovered: false,
+        error: new APIException(
+          API_EX.API_TOKEN_EXPIRES,
+          `登录失效，自动刷新失败: ${refreshMessage}`
+        ),
+      } as const;
+    }
+
+    const refreshed = this.#materializeAccount(this.#requireAccount(accountId));
+    const nextToken = this.#buildRequestToken(refreshed);
+    if (!nextToken) {
+      return {
+        recovered: false,
+        error: new APIException(
+          API_EX.API_TOKEN_EXPIRES,
+          `登录失效，自动刷新后仍缺少可用 Session: ${refreshed.email}`
+        ),
+      } as const;
+    }
+
+    try {
+      const result = await handler(nextToken, {
+        mode: "pool",
+        accountId,
+        apiKeyId,
+      });
+      await this.#markAccountSuccess(accountId);
+      await this.#markApiKeyUsed(apiKeyId);
+      logger.info(`账号 ${refreshed.email} 自动刷新后重试成功`);
+      return {
+        recovered: true,
+        result,
+      } as const;
+    } catch (retryError: any) {
+      logger.warn(
+        `账号 ${refreshed.email} 自动刷新后再次请求失败，准备继续切换: ${retryError?.message || retryError}`
+      );
+      return {
+        recovered: false,
+        error: retryError,
+      } as const;
+    }
+  }
+
   async #selectManagedAccount(ability: PoolAbility, excludedIds: Set<string>) {
+    this.#releaseExpiredBlacklistedAccounts();
     const candidates = this.store
       .getState()
       .accounts.filter((item) => item.enabled && !item.blacklisted && !excludedIds.has(item.id))
@@ -1041,6 +1587,10 @@ export default class AccountPoolService {
         if (leaseDiff !== 0) return leaseDiff;
         const statusDiff = statusPriority(a.status) - statusPriority(b.status);
         if (statusDiff !== 0) return statusDiff;
+        const validationDiff =
+          validationStatusPriority(effectiveValidationStatus(a)) -
+          validationStatusPriority(effectiveValidationStatus(b));
+        if (validationDiff !== 0) return validationDiff;
         return String(a.lastUsedAt || "").localeCompare(String(b.lastUsedAt || ""));
       });
 
@@ -1087,7 +1637,10 @@ export default class AccountPoolService {
 
     const triedIds = new Set<string>();
     let lastError: any = null;
-    const maxAttempts = Math.max(1, this.settings.maxRequestRetries);
+    const candidateCount = this.store
+      .getState()
+      .accounts.filter((item) => item.enabled && !item.blacklisted).length;
+    const maxAttempts = Math.max(1, this.settings.maxRequestRetries, candidateCount);
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const selected = await this.#selectManagedAccount(ability, triedIds);
@@ -1111,9 +1664,21 @@ export default class AccountPoolService {
         return result;
       } catch (error: any) {
         lastError = error;
-        const classified = await this.#markAccountFailure(selected.account.id, error);
+        const recovered = await this.#retryCurrentAccountAfterRefresh(
+          selected.account.id,
+          ability,
+          managedApiKey.id,
+          handler,
+          error
+        );
+        if (recovered.recovered) {
+          return recovered.result;
+        }
+
+        lastError = recovered.error;
+        const classified = await this.#markAccountFailure(selected.account.id, recovered.error);
         triedIds.add(selected.account.id);
-        if (!classified.retryable) throw error;
+        if (!classified.retryable) throw recovered.error;
       } finally {
         selected.lease.release();
       }
@@ -1126,14 +1691,21 @@ export default class AccountPoolService {
     if (this.maintenanceRunning) return;
     this.maintenanceRunning = true;
     try {
+      this.#releaseExpiredBlacklistedAccounts();
       const accounts = this.store
         .getState()
         .accounts.filter((item) => item.enabled && item.autoRefresh && !item.blacklisted);
       for (const account of accounts) {
         const materialized = this.#materializeAccount(account);
         if (!materialized.password) continue;
-        if (!this.#isSessionExpiring(materialized)) continue;
         if (this.getActiveLeaseCount(account.id) > 0) continue;
+        const shouldRefresh =
+          !primaryToken(materialized) ||
+          materialized.status === "expired" ||
+          materialized.status === "invalid" ||
+          effectiveValidationStatus(materialized) === "invalid" ||
+          this.#isSessionExpiring(materialized);
+        if (!shouldRefresh) continue;
 
         try {
           await this.refreshAccountSession(account.id, "maintenance");

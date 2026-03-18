@@ -108,6 +108,18 @@ export function parseProxyFromToken(rawToken: string): TokenWithProxy {
   return { token, proxyUrl };
 }
 
+function isProxyTransportError(error: any) {
+  const message = String(error?.message || error || "");
+  return (
+    /proxy connection ended before receiving connect response/i.test(message) ||
+    /err_empty_response/i.test(message) ||
+    /err_connection_closed/i.test(message) ||
+    /err_tunnel_connection_failed/i.test(message) ||
+    /failed to connect to upstream/i.test(message) ||
+    /socket disconnected before secure tls connection was established/i.test(message)
+  );
+}
+
 export function parseRegionFromToken(refreshToken: string): RegionInfo {
   const { token: parsedToken } = parseProxyFromToken(refreshToken);
   const token = parsedToken.toLowerCase();
@@ -323,16 +335,12 @@ export async function request(
   logger.info(`请求参数: ${JSON.stringify(requestParams)}`);
   logger.info(`请求数据: ${JSON.stringify(options.data || {})}`);
 
-  const proxyAgent = proxyUrl
-    ? (proxyUrl.toLowerCase().startsWith("socks")
-      ? new SocksProxyAgent(proxyUrl)
-      : new HttpsProxyAgent(proxyUrl))
-    : undefined;
-
   // 添加重试逻辑
   let retries = 0;
   const maxRetries = RETRY_CONFIG.MAX_RETRY_COUNT;
   let lastError = null;
+  let currentProxyUrl = proxyUrl;
+  let directFallbackUsed = false;
 
   while (retries <= maxRetries) {
     try {
@@ -341,6 +349,12 @@ export async function request(
         // 重试前等待一段时间
         await new Promise(resolve => setTimeout(resolve, RETRY_CONFIG.RETRY_DELAY));
       }
+
+      const proxyAgent = currentProxyUrl
+        ? (currentProxyUrl.toLowerCase().startsWith("socks")
+          ? new SocksProxyAgent(currentProxyUrl)
+          : new HttpsProxyAgent(currentProxyUrl))
+        : undefined;
 
       const response = await axios.request({
         method,
@@ -368,6 +382,17 @@ export async function request(
       // 检查HTTP状态码
       if (response.status >= 400) {
         logger.warn(`HTTP错误: ${response.status} ${response.statusText}`);
+        if (
+          currentProxyUrl &&
+          !directFallbackUsed &&
+          response.status >= 500 &&
+          /failed to connect to upstream/i.test(String(response.data || ""))
+        ) {
+          logger.warn(`代理请求失败，回退直连重试: ${method.toUpperCase()} ${fullUrl}`);
+          currentProxyUrl = null;
+          directFallbackUsed = true;
+          continue;
+        }
         if (retries < maxRetries) {
           retries++;
           continue;
@@ -393,6 +418,13 @@ export async function request(
         error.message.includes('ECONNRESET') ||
         error.message.includes('socket hang up') ||
         error.message.includes('Proxy connection');
+
+      if (currentProxyUrl && !directFallbackUsed && isProxyTransportError(error)) {
+        logger.warn(`代理请求失败，回退直连重试: ${method.toUpperCase()} ${fullUrl}`);
+        currentProxyUrl = null;
+        directFallbackUsed = true;
+        continue;
+      }
 
       if (isRetryableError && retries < maxRetries) {
         retries++;

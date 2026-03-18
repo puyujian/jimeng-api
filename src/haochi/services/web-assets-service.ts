@@ -20,12 +20,27 @@ export default class WebAssetsService {
     return resolved;
   }
 
+  #buildAssetVersion(fileName: string) {
+    const filePath = this.#resolveAdminFile(fileName);
+    const stat = fs.statSync(filePath);
+    return `${Math.trunc(stat.mtimeMs)}-${stat.size.toString(36)}`;
+  }
+
+  #injectAssetVersions(html: string) {
+    return html.replace(
+      /((?:href|src)=["'])(\/admin\/assets\/([^"']+))(["'])/g,
+      (_match, prefix, assetPath, fileName, suffix) =>
+        `${prefix}${assetPath}?v=${this.#buildAssetVersion(String(fileName || ""))}${suffix}`
+    );
+  }
+
   adminIndex() {
     const filePath = this.#resolveAdminFile("index.html");
-    return new Response(fs.readFileSync(filePath), {
+    const html = fs.readFileSync(filePath, "utf8");
+    return new Response(this.#injectAssetVersions(html), {
       type: "text/html",
       headers: {
-        "Cache-Control": "no-cache",
+        "Cache-Control": "no-store",
       },
     });
   }
@@ -36,7 +51,7 @@ export default class WebAssetsService {
       type: mime.getType(filePath) || "application/octet-stream",
       headers: {
         "Cache-Control": fileName.endsWith(".css") || fileName.endsWith(".js")
-          ? "public, max-age=300"
+          ? "public, max-age=31536000, immutable"
           : "no-cache",
       },
     });

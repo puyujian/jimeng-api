@@ -201,6 +201,16 @@
                   />
                 </label>
                 <label>
+                  <span>地区</span>
+                  <select id="account-region">
+                    <option value="jp" selected>日本区</option>
+                    <option value="cn">中国区</option>
+                    <option value="us">美国区</option>
+                    <option value="hk">香港区</option>
+                    <option value="sg">新加坡区</option>
+                  </select>
+                </label>
+                <label>
                   <span>并发上限</span>
                   <input id="account-max-concurrency" type="number" min="1" max="20" value="2" />
                 </label>
@@ -216,6 +226,9 @@
                   <span>备注</span>
                   <textarea id="account-notes" rows="3"></textarea>
                 </label>
+                <p class="muted full-span helper-copy">
+                  地区继续写在 SessionID 前缀里，例如 `jp-sessionid`。旧数据没有前缀时，仍兼容按中国区读取。
+                </p>
                 <div class="form-actions full-span">
                   <button class="primary-btn" type="submit">保存账号</button>
                   <button id="clear-account-session" class="ghost-btn" type="button">清空 Session</button>
@@ -242,6 +255,16 @@
                   <label>
                     <span>默认代理</span>
                     <input id="account-import-default-proxy" placeholder="整批默认代理，可空" />
+                  </label>
+                  <label>
+                    <span>默认地区</span>
+                    <select id="account-import-default-region">
+                      <option value="jp" selected>日本区</option>
+                      <option value="cn">中国区</option>
+                      <option value="us">美国区</option>
+                      <option value="hk">香港区</option>
+                      <option value="sg">新加坡区</option>
+                    </select>
                   </label>
                   <label>
                     <span>默认并发上限</span>
@@ -277,10 +300,102 @@
                   <p class="muted">状态、Session、并发和异常都集中在同一张表里。</p>
                 </div>
 
+                <section class="batch-panel" aria-label="账号批量管理">
+                  <div class="batch-panel-head">
+                    <div>
+                      <p class="section-kicker">Batch Manage</p>
+                      <h4>批量代理 / 地区 / 删除</h4>
+                    </div>
+                    <label class="checkbox-field inline-checkbox">
+                      <input id="accounts-batch-apply-all" type="checkbox" />
+                      <span>直接作用到全部账号</span>
+                    </label>
+                  </div>
+                  <div class="batch-toolbar">
+                    <label class="checkbox-field inline-checkbox">
+                      <input id="accounts-select-all" type="checkbox" />
+                      <span>全选当前页</span>
+                    </label>
+                    <p id="accounts-selection-summary" class="muted batch-summary">已选 0 个账号</p>
+                  </div>
+                  <div class="batch-grid">
+                    <label>
+                      <span>代理操作</span>
+                      <select id="accounts-batch-proxy-mode">
+                        <option value="ignore" selected>不修改代理</option>
+                        <option value="set">设置代理</option>
+                        <option value="clear">清空代理</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>代理值</span>
+                      <input
+                        id="accounts-batch-proxy"
+                        placeholder="例如 http://127.0.0.1:7890 或 socks5://host:port"
+                      />
+                    </label>
+                    <label>
+                      <span>地区操作</span>
+                      <select id="accounts-batch-region">
+                        <option value="ignore" selected>不修改地区</option>
+                        <option value="jp">日本区</option>
+                        <option value="cn">中国区</option>
+                        <option value="us">美国区</option>
+                        <option value="hk">香港区</option>
+                        <option value="sg">新加坡区</option>
+                      </select>
+                    </label>
+                    <div class="form-actions batch-actions">
+                      <button id="accounts-batch-apply" class="primary-btn" type="button">批量应用</button>
+                      <button id="accounts-batch-delete" class="ghost-btn" type="button">批量删除</button>
+                    </div>
+                  </div>
+                  <p class="muted helper-copy">
+                    地区仍然通过 SessionID 前缀生效；没有 Session 的旧账号会兼容保留原状，批量改地区时会跳过。
+                  </p>
+                </section>
+
+                <div class="table-toolbar" aria-label="账号列表分页工具栏">
+                  <div class="filter-bar">
+                    <label class="pagination-size filter-select">
+                      <span>状态筛选</span>
+                      <select id="accounts-status-filter" aria-label="账号状态筛选">
+                        <option value="all" selected>全部</option>
+                        <option value="healthy">健康</option>
+                        <option value="invalid">失效</option>
+                        <option value="blacklisted">拉黑</option>
+                      </select>
+                    </label>
+                    <button id="accounts-refresh-invalid" class="ghost-btn" type="button">
+                      一键刷新失效 Session
+                    </button>
+                    <button id="accounts-validate-all" class="ghost-btn" type="button">
+                      一键校验全部账号
+                    </button>
+                  </div>
+                  <p id="accounts-table-meta" class="muted table-meta">等待账号数据...</p>
+                  <div class="pagination-bar">
+                    <label class="pagination-size">
+                      <span>每页</span>
+                      <select id="accounts-page-size" aria-label="账号列表每页条数">
+                        <option value="10" selected>10 条</option>
+                        <option value="20">20 条</option>
+                        <option value="50">50 条</option>
+                      </select>
+                    </label>
+                    <span id="accounts-page-indicator" class="page-indicator" aria-live="polite">第 1 / 1 页</span>
+                    <div class="pagination-actions">
+                      <button id="accounts-page-prev" class="ghost-btn" type="button">上一页</button>
+                      <button id="accounts-page-next" class="ghost-btn" type="button">下一页</button>
+                    </div>
+                  </div>
+                </div>
+
                 <div class="table-wrap">
                   <table class="data-table">
                     <thead>
                       <tr>
+                        <th scope="col">选择</th>
                         <th scope="col">状态</th>
                         <th scope="col">邮箱</th>
                         <th scope="col">Session</th>
@@ -384,11 +499,33 @@
             <section class="panel-shell mini-panel motion-item" style="--item-index:6">
               <div class="section-head">
                 <div>
-                  <p class="section-kicker">Activity</p>
-                  <h3>最新动作日志</h3>
+                  <p class="section-kicker">Log Center</p>
+                  <h3>日志中心</h3>
                 </div>
               </div>
-              <pre id="activity-log" class="activity-log">等待操作...</pre>
+              <div class="log-stack">
+                <section class="log-section">
+                  <div class="log-section-head">
+                    <div>
+                      <p class="section-kicker">Activity</p>
+                      <h4>前端动作日志</h4>
+                    </div>
+                  </div>
+                  <pre id="activity-log" class="activity-log">等待操作...</pre>
+                </section>
+
+                <section class="log-section">
+                  <div class="log-section-head">
+                    <div>
+                      <p class="section-kicker">Outbound</p>
+                      <h4>外部调用日志</h4>
+                    </div>
+                    <button id="reload-outbound-logs" class="ghost-btn" type="button">刷新日志</button>
+                  </div>
+                  <p id="outbound-log-meta" class="muted log-meta">等待加载真实调用日志...</p>
+                  <pre id="outbound-log" class="activity-log outbound-log">等待后端返回调用日志...</pre>
+                </section>
+              </div>
             </section>
           </aside>
         </section>

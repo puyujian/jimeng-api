@@ -33,6 +33,24 @@ function ensurePassword(account: PoolAccount) {
   return account.password;
 }
 
+function primarySessionToken(account: PoolAccount) {
+  return (
+    account.sessionTokens?.sessionid ||
+    account.sessionTokens?.sessionid_ss ||
+    account.sessionTokens?.sid_tt ||
+    ""
+  );
+}
+
+function inferRegionPrefixFromAccount(account: PoolAccount) {
+  const token = String(primarySessionToken(account) || "").trim().toLowerCase();
+  if (token.startsWith("us-")) return "us-";
+  if (token.startsWith("hk-")) return "hk-";
+  if (token.startsWith("jp-")) return "jp-";
+  if (token.startsWith("sg-")) return "sg-";
+  return "";
+}
+
 class MockLoginProvider implements LoginProvider {
   readonly name = "mock";
 
@@ -152,6 +170,48 @@ class DreaminaLoginProvider implements LoginProvider {
     // no-op: 登录浏览器按次启动并在单次登录后立即回收
   }
 
+  #isProxyTransportError(error: any) {
+    const message = String(error?.message || error || "");
+    return (
+      /proxy connection ended before receiving connect response/i.test(message) ||
+      /err_empty_response/i.test(message) ||
+      /err_connection_closed/i.test(message) ||
+      /err_tunnel_connection_failed/i.test(message) ||
+      /failed to connect to upstream/i.test(message) ||
+      /navigation timeout/i.test(message)
+    );
+  }
+
+  #resolveLoginTargets(account: PoolAccount) {
+    const regionPrefix = inferRegionPrefixFromAccount(account);
+    if (!regionPrefix) {
+      return {
+        regionPrefix,
+        siteLabel: "即梦",
+        loginUrl: "https://jimeng.jianying.com/ai-tool/home",
+        cookieOrigins: [
+          "https://jimeng.jianying.com/",
+          "https://jimeng.jianying.com/ai-tool/home",
+          "https://jimeng.jianying.com/ai-tool/generate?type=image",
+          "https://jimeng.jianying.com/ai-tool/generate?type=video",
+        ],
+      };
+    }
+
+    return {
+      regionPrefix,
+      siteLabel: "Dreamina",
+      loginUrl: "https://dreamina.capcut.com/ai-tool/login",
+      cookieOrigins: [
+        "https://dreamina.capcut.com/",
+        "https://dreamina.capcut.com/ai-tool/home",
+        "https://dreamina.capcut.com/ai-tool/login",
+        "https://capcut.com/",
+        "https://www.capcut.com/",
+      ],
+    };
+  }
+
   async #captureDebugArtifacts(page: any, tag: string) {
     try {
       fs.ensureDirSync(this.debugDir);
@@ -208,15 +268,9 @@ class DreaminaLoginProvider implements LoginProvider {
     });
   }
 
-  async #extractCookies(page: any) {
+  async #extractCookies(page: any, origins: string[] = []) {
     try {
-      const list = await page.cookies(
-        "https://dreamina.capcut.com/",
-        "https://dreamina.capcut.com/ai-tool/home",
-        "https://dreamina.capcut.com/ai-tool/login",
-        "https://capcut.com/",
-        "https://www.capcut.com/"
-      );
+      const list = await page.cookies(...origins);
       const cookies = Object.fromEntries(
         (list || [])
           .filter((item: any) => item?.name)
@@ -296,31 +350,76 @@ class DreaminaLoginProvider implements LoginProvider {
     return "";
   }
 
-  async #acceptPrivacyConsent(page: any) {
-    for (const frame of page.frames()) {
-      try {
-        const hasCheckbox = await frame.evaluate(() => {
-          const input = document.querySelector(".privacyCheck input") as HTMLInputElement | null;
-          if (input) return !input.checked;
-          return !!document.querySelector(".privacyCheck");
-        });
-        if (!hasCheckbox) continue;
-
+  async #acceptPrivacyConsent(page: any, timeoutMs = 4000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      for (const frame of page.frames()) {
         try {
-          await frame.click(".privacyCheck", { delay: 30 });
-        } catch {
-          await frame.evaluate(() => {
-            const target =
-              document.querySelector(".privacyCheck") ||
-              document.querySelector(".privacyCheck input");
-            if (target instanceof HTMLElement) target.click();
+          const clicked = await frame.evaluate(() => {
+            const isVisible = (element: Element | null) => {
+              if (!(element instanceof HTMLElement)) return false;
+              const style = window.getComputedStyle(element);
+              if (
+                style.display === "none" ||
+                style.visibility === "hidden" ||
+                style.opacity === "0"
+              ) {
+                return false;
+              }
+              const rect = element.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0;
+            };
+
+            const checkbox = document.querySelector(".privacyCheck input") as HTMLInputElement | null;
+            if (checkbox && !checkbox.checked) {
+              const target =
+                document.querySelector(".privacyCheck") ||
+                checkbox;
+              if (target instanceof HTMLElement && isVisible(target)) {
+                target.click();
+                return true;
+              }
+            }
+
+            for (const selector of [
+              ".privacy-modal-zNWslH .agree-button-od5VVh",
+              ".privacy-modal-zNWslH .lv-btn-primary",
+              ".lv-modal-wrapper .agree-button-od5VVh",
+              ".lv-modal-wrapper .lv-btn-primary",
+            ]) {
+              const button = document.querySelector(selector);
+              if (isVisible(button)) {
+                (button as HTMLElement).click();
+                return true;
+              }
+            }
+
+            const agreeButton = Array.from(
+              document.querySelectorAll("button, [role='button'], .lv-btn")
+            ).find((node) => {
+              if (!isVisible(node)) return false;
+              const text = String((node as HTMLElement).innerText || node.textContent || "").trim();
+              return [
+                "同意",
+                "同意并继续",
+                "同意后继续",
+              ].includes(text);
+            });
+            if (agreeButton instanceof HTMLElement) {
+              agreeButton.click();
+              return true;
+            }
+
+            return false;
           });
+          if (!clicked) continue;
+          await this.#delay(400);
+          return true;
+        } catch {
+          // ignore
         }
-        await this.#delay(400);
-        return true;
-      } catch {
-        // ignore
       }
+      await this.#delay(250);
     }
     return false;
   }
@@ -628,6 +727,11 @@ class DreaminaLoginProvider implements LoginProvider {
       5000
     );
     popup = await selectorPopup;
+    if (!popup) {
+      const consentPopup = this.#waitForPopup(browser, proxyAuth, 4000);
+      await this.#acceptPrivacyConsent(page, 4000);
+      popup = await consentPopup;
+    }
     if (popup) {
       try {
         await popup.bringToFront();
@@ -639,9 +743,28 @@ class DreaminaLoginProvider implements LoginProvider {
 
     await this.#waitForLoginUi(page, 5000);
     if (!(await this.#isLoginUiPresent(page))) {
+      const consentPopup = this.#waitForPopup(browser, proxyAuth, 4000);
+      await this.#acceptPrivacyConsent(page, 3000);
+      popup = await consentPopup;
+      if (popup) {
+        try {
+          await popup.bringToFront();
+        } catch {
+          // ignore
+        }
+        page = popup;
+      }
+      await this.#waitForLoginUi(page, 5000);
+    }
+    if (!(await this.#isLoginUiPresent(page))) {
       const textPopup = this.#waitForPopup(browser, proxyAuth, 4000);
       await this.#clickByTextDeep(page, ["Sign in", "Log in", "登录"], 6000);
       popup = await textPopup;
+      if (!popup) {
+        const consentPopup = this.#waitForPopup(browser, proxyAuth, 4000);
+        await this.#acceptPrivacyConsent(page, 4000);
+        popup = await consentPopup;
+      }
       if (popup) {
         try {
           await popup.bringToFront();
@@ -656,7 +779,7 @@ class DreaminaLoginProvider implements LoginProvider {
     return page;
   }
 
-  async login(account: PoolAccount, onProgress?: (message: string) => void): Promise<LoginResult> {
+  async #loginOnce(account: PoolAccount, onProgress?: (message: string) => void): Promise<LoginResult> {
     const logs: LoginProgressEntry[] = [];
     const push = (message: string) => {
       logs.push({ time: nowIso(), message });
@@ -666,6 +789,7 @@ class DreaminaLoginProvider implements LoginProvider {
 
     const password = ensurePassword(account);
     const maskedEmail = maskSecret(account.email, 4, 8);
+    const loginTargets = this.#resolveLoginTargets(account);
     const { browser, proxyAuth, maskedProxy } = await this.#launchBrowser(account.proxy);
     const context = await browser.createBrowserContext();
     let page = await context.newPage();
@@ -679,8 +803,8 @@ class DreaminaLoginProvider implements LoginProvider {
         push(`启用登录代理 ${maskedProxy}`);
       }
 
-      push(`访问 Dreamina 登录页 (${maskedEmail})`);
-      await page.goto("https://dreamina.capcut.com/ai-tool/login", {
+      push(`访问${loginTargets.siteLabel}登录页 (${maskedEmail})`);
+      await page.goto(loginTargets.loginUrl, {
         waitUntil: "domcontentloaded",
         timeout: 30000,
       });
@@ -689,7 +813,7 @@ class DreaminaLoginProvider implements LoginProvider {
       page = await this.#openLoginUi(browser, page, proxyAuth);
       if (!(await this.#isLoginUiPresent(page))) {
         await this.#captureDebugArtifacts(page, "login_ui_not_found");
-        throw new Error("未成功打开 Dreamina 登录界面");
+        throw new Error(`未成功打开${loginTargets.siteLabel}登录界面`);
       }
 
       push("切换到邮箱登录");
@@ -766,7 +890,7 @@ class DreaminaLoginProvider implements LoginProvider {
       push("等待 SessionID 落地");
       const startedAt = Date.now();
       let captchaLogged = false;
-      let cookies = await this.#extractCookies(page);
+      let cookies = await this.#extractCookies(page, loginTargets.cookieOrigins);
       while (
         Date.now() - startedAt < 180000 &&
         !cookies.sessionid &&
@@ -778,7 +902,7 @@ class DreaminaLoginProvider implements LoginProvider {
           push("检测到验证码或安全校验，请关闭 headless 并人工协助首登");
         }
         await this.#delay(800);
-        cookies = await this.#extractCookies(page);
+        cookies = await this.#extractCookies(page, loginTargets.cookieOrigins);
       }
 
       if (!cookies.sessionid && !cookies.sessionid_ss && !cookies.sid_tt) {
@@ -866,6 +990,34 @@ class DreaminaLoginProvider implements LoginProvider {
         // ignore
       }
     }
+  }
+
+  async login(account: PoolAccount, onProgress?: (message: string) => void): Promise<LoginResult> {
+    const firstAttempt = await this.#loginOnce(account, onProgress);
+    if (firstAttempt.success || !account.proxy || !this.#isProxyTransportError(firstAttempt.error)) {
+      return firstAttempt;
+    }
+
+    const fallbackMessage = "检测到代理异常，回退直连重试";
+    logger.warn(`[号池登录] ${account.email}: ${fallbackMessage}: ${firstAttempt.error}`);
+    onProgress?.(fallbackMessage);
+
+    const secondAttempt = await this.#loginOnce(
+      {
+        ...account,
+        proxy: null,
+      },
+      onProgress
+    );
+
+    return {
+      ...secondAttempt,
+      logs: [
+        ...firstAttempt.logs,
+        { time: nowIso(), message: fallbackMessage },
+        ...secondAttempt.logs,
+      ],
+    };
   }
 }
 

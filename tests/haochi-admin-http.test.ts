@@ -90,6 +90,14 @@ test("号池管理后台 HTTP 链路可用", { concurrency: false }, async (t) =
   const adminHtml = await adminPage.text();
   assert.equal(adminPage.status, 200);
   assert.match(adminHtml, /Dreamina Account Pool/);
+  const stylesAssetPath = adminHtml.match(/href="([^"]*\/admin\/assets\/styles\.css\?v=[^"]+)"/)?.[1];
+  const scriptAssetPath = adminHtml.match(/src="([^"]*\/admin\/assets\/app\.js\?v=[^"]+)"/)?.[1];
+  assert.ok(stylesAssetPath, "管理后台首页应返回带版本戳的 styles.css");
+  assert.ok(scriptAssetPath, "管理后台首页应返回带版本戳的 app.js");
+
+  const adminScript = await fetch(`http://127.0.0.1:${port}${scriptAssetPath}`);
+  assert.equal(adminScript.status, 200);
+  assert.equal(adminScript.headers.get("cache-control"), "public, max-age=31536000, immutable");
 
   const unauthorized = await httpJson(
     port,
@@ -145,6 +153,27 @@ test("号池管理后台 HTTP 链路可用", { concurrency: false }, async (t) =
   assert.equal(validated.response.status, 200);
   assert.equal(validated.payload.valid, true);
 
+  const updatedAccount = await httpJson(
+    port,
+    `/api/admin/accounts/${accountId}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        email: "demo@example.com",
+        proxy: "http://127.0.0.1:7001",
+        region: "jp",
+        maxConcurrency: 3,
+        autoRefresh: true,
+        enabled: true,
+        notes: "jp-account",
+      }),
+    },
+    cookie
+  );
+  assert.equal(updatedAccount.response.status, 200);
+  assert.equal(updatedAccount.payload.item.region, "jp");
+  assert.equal(updatedAccount.payload.item.status, "healthy");
+
   const importedAccounts = await httpJson(
     port,
     "/api/admin/accounts/import",
@@ -174,6 +203,125 @@ test("号池管理后台 HTTP 链路可用", { concurrency: false }, async (t) =
   assert.equal(importedB.proxy, "socks5://127.0.0.1:1080");
   assert.equal(importedC.proxy, "socks5://127.0.0.1:1080");
   assert.equal(importedC.status, "healthy");
+  assert.equal(importedC.region, "jp");
+
+  const pagedAccounts = await httpJson(port, "/api/admin/accounts?page=1&page_size=2", {}, cookie);
+  assert.equal(pagedAccounts.response.status, 200);
+  assert.equal(pagedAccounts.payload.total, 4);
+  assert.equal(pagedAccounts.payload.page, 1);
+  assert.equal(pagedAccounts.payload.pageSize, 2);
+  assert.equal(pagedAccounts.payload.totalPages, 2);
+  assert.deepEqual(
+    pagedAccounts.payload.items.map((item: any) => item.email),
+    ["batch-a@example.com", "batch-b@example.com"]
+  );
+
+  const blacklistedAccount = await httpJson(
+    port,
+    `/api/admin/accounts/${importedA.id}/blacklist`,
+    {
+      method: "POST",
+      body: JSON.stringify({ reason: "manual" }),
+    },
+    cookie
+  );
+  assert.equal(blacklistedAccount.response.status, 200);
+
+  const invalidatedAccount = await httpJson(
+    port,
+    `/api/admin/accounts/${importedB.id}/validate-session`,
+    { method: "POST" },
+    cookie
+  );
+  assert.equal(invalidatedAccount.response.status, 200);
+  assert.equal(invalidatedAccount.payload.valid, false);
+
+  const healthyOnly = await httpJson(port, "/api/admin/accounts?status=healthy&page=1&page_size=10", {}, cookie);
+  assert.equal(healthyOnly.response.status, 200);
+  assert.equal(healthyOnly.payload.total, 2);
+  assert.deepEqual(
+    healthyOnly.payload.items.map((item: any) => item.email),
+    ["batch-c@example.com", "demo@example.com"]
+  );
+
+  const invalidOnly = await httpJson(port, "/api/admin/accounts?status=invalid&page=1&page_size=10", {}, cookie);
+  assert.equal(invalidOnly.response.status, 200);
+  assert.equal(invalidOnly.payload.total, 1);
+  assert.equal(invalidOnly.payload.items[0].id, importedB.id);
+
+  const blacklistedOnly = await httpJson(
+    port,
+    "/api/admin/accounts?status=blacklisted&page=1&page_size=10",
+    {},
+    cookie
+  );
+  assert.equal(blacklistedOnly.response.status, 200);
+  assert.equal(blacklistedOnly.payload.total, 1);
+  assert.equal(blacklistedOnly.payload.items[0].id, importedA.id);
+
+  const refreshedInvalid = await httpJson(
+    port,
+    "/api/admin/accounts/batch/refresh-invalid-session",
+    { method: "POST" },
+    cookie
+  );
+  assert.equal(refreshedInvalid.response.status, 200);
+  assert.equal(refreshedInvalid.payload.matchedCount, 1);
+  assert.equal(refreshedInvalid.payload.refreshedCount, 1);
+  assert.equal(refreshedInvalid.payload.failedCount, 0);
+  assert.equal(refreshedInvalid.payload.refreshed[0].id, importedB.id);
+
+  const invalidAfterRefresh = await httpJson(
+    port,
+    "/api/admin/accounts?status=invalid&page=1&page_size=10",
+    {},
+    cookie
+  );
+  assert.equal(invalidAfterRefresh.response.status, 200);
+  assert.equal(invalidAfterRefresh.payload.total, 0);
+
+  const validatedAll = await httpJson(
+    port,
+    "/api/admin/accounts/batch/validate-session",
+    { method: "POST" },
+    cookie
+  );
+  assert.equal(validatedAll.response.status, 200);
+  assert.equal(validatedAll.payload.matchedCount, 4);
+  assert.equal(validatedAll.payload.validCount, 1);
+  assert.equal(validatedAll.payload.invalidCount, 3);
+  assert.equal(validatedAll.payload.failedCount, 0);
+
+  const batchUpdated = await httpJson(
+    port,
+    "/api/admin/accounts/batch/update",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        ids: [accountId, importedB.id, importedC.id],
+        proxy: "http://127.0.0.1:9009",
+        region: "us",
+      }),
+    },
+    cookie
+  );
+  assert.equal(batchUpdated.response.status, 200);
+  assert.equal(batchUpdated.payload.matchedCount, 3);
+  assert.equal(batchUpdated.payload.updatedCount, 3);
+  assert.equal(batchUpdated.payload.regionUpdatedCount, 3);
+  assert.equal(batchUpdated.payload.regionSkippedCount, 0);
+
+  const afterBatch = await httpJson(port, "/api/admin/accounts?page=1&page_size=10", {}, cookie);
+  assert.equal(afterBatch.response.status, 200);
+  const batchAccount = afterBatch.payload.items.find((item: any) => item.id === accountId);
+  const batchImportedB = afterBatch.payload.items.find((item: any) => item.id === importedB.id);
+  const batchImportedC = afterBatch.payload.items.find((item: any) => item.id === importedC.id);
+  assert.equal(batchAccount.proxy, "http://127.0.0.1:9009");
+  assert.equal(batchAccount.region, "us");
+  assert.equal(batchImportedB.proxy, "http://127.0.0.1:9009");
+  assert.equal(batchImportedB.region, "us");
+  assert.equal(batchImportedC.proxy, "http://127.0.0.1:9009");
+  assert.equal(batchImportedC.region, "us");
 
   const createdKey = await httpJson(
     port,
@@ -220,7 +368,30 @@ test("号池管理后台 HTTP 链路可用", { concurrency: false }, async (t) =
   assert.equal(overview.response.status, 200);
   assert.equal(overview.payload.counts.accounts, 4);
   assert.equal(overview.payload.counts.apiKeys, 1);
+  assert.equal(overview.payload.counts.totalCapacity, 15);
   assert.equal(overview.payload.apiKeys[0].rawKey, rotatedKey.payload.rawKey);
+  assert.equal(overview.payload.accounts, undefined);
+
+  const outboundLogs = await httpJson(port, "/api/admin/logs/outbound?limit=20", {}, cookie);
+  assert.equal(outboundLogs.response.status, 200);
+  assert.equal(outboundLogs.payload.kind, "outbound");
+  assert.ok(Array.isArray(outboundLogs.payload.entries));
+  assert.equal(typeof outboundLogs.payload.fileName, "string");
+  assert.equal(typeof outboundLogs.payload.totalMatched, "number");
+
+  const batchDeleted = await httpJson(
+    port,
+    "/api/admin/accounts/batch/delete",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        ids: [importedA.id, importedB.id],
+      }),
+    },
+    cookie
+  );
+  assert.equal(batchDeleted.response.status, 200);
+  assert.equal(batchDeleted.payload.deletedCount, 2);
 
   const deletedKey = await httpJson(
     port,
@@ -247,4 +418,9 @@ test("号池管理后台 HTTP 链路可用", { concurrency: false }, async (t) =
     cookie
   );
   assert.equal(deletedAccount.response.status, 200);
+
+  const remainingAccounts = await httpJson(port, "/api/admin/accounts?page=1&page_size=10", {}, cookie);
+  assert.equal(remainingAccounts.response.status, 200);
+  assert.equal(remainingAccounts.payload.total, 1);
+  assert.equal(remainingAccounts.payload.items[0].id, importedC.id);
 });

@@ -61,20 +61,34 @@ export default {
             
             const options = { ratio: finalRatio, resolution, duration, sample_strength, negative_prompt };
             if (stream) {
-                const stream = await haochiAccountPoolService.runWithRequestToken(
-                    request,
-                    'chat',
-                    async (token) => createCompletionStream(messages, token, model, options)
+                const stream = await createCompletionStream(
+                    messages,
+                    '',
+                    model,
+                    options,
+                    0,
+                    async (handler) => haochiAccountPoolService.runWithRequestToken(
+                        request,
+                        'chat',
+                        async (token) => handler(token)
+                    )
                 );
                 return new Response(stream, {
                     type: "text/event-stream"
                 });
             }
             else
-                return await haochiAccountPoolService.runWithRequestToken(
-                    request,
-                    'chat',
-                    async (token) => createCompletion(messages, token, model, options)
+                return await createCompletion(
+                    messages,
+                    '',
+                    model,
+                    options,
+                    0,
+                    async (handler) => haochiAccountPoolService.runWithRequestToken(
+                        request,
+                        'chat',
+                        async (token) => handler(token)
+                    )
                 );
         }
 

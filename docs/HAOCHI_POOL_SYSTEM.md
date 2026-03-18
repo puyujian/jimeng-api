@@ -38,6 +38,8 @@
   - 管理后台接口
 - `src/api/routes/haochi-web.ts`
   - `/admin` 管理页面和静态资源
+- `src/haochi/services/admin-log-service.ts`
+  - 读取当日日志文件中的 `[OUTBOUND]` 外部调用日志，供后台 UI 查看
 
 ### 2.2 前端 WebUI
 
@@ -56,6 +58,7 @@
 - API Key CRUD / 重置 / 常显复制
 - 管理员密码修改
 - 最近动作日志与新签发密钥回显
+- 后端真实外部调用日志查看与手动刷新
 
 ### 2.3 旧接口接入方式
 
@@ -111,6 +114,9 @@
 - `status`
   - `idle / healthy / refreshing / expired / invalid / insufficient_credit / blacklisted / disabled / error`
 - `blacklistedReason`
+- `blacklistReleaseAt`
+  - 仅当账号因积分不足被临时拉黑时写入
+  - 当前按 `Asia/Shanghai` 的次日 00:00 自动解除拉黑
 - `maxConcurrency`
 - `successCount / failureCount`
 - `lastLoginAt / lastValidatedAt / sessionExpiresAt`
@@ -150,19 +156,24 @@
 逻辑：
 
 - 请求进来时先判断 Session 是否缺失或即将过期
-- 后台维护定时器也会周期性刷新即将过期的账号
+- 请求执行中若命中 `session/token` 失效，会优先自动刷新当前账号并重试
+- 后台维护定时器也会周期性刷新即将过期、已失效或已过期的账号
 
 ### 4.3 自动拉黑
 
 以下情况会自动拉黑当前账号：
 
-- 登录失效 / Token 失效
 - 积分不足，包括错误信息含 `1006`
 
 拉黑后：
 
 - 当前请求自动切换下一个账号重试
 - 管理后台可手动解除拉黑
+- 若是积分不足导致的临时拉黑，会在 `Asia/Shanghai` 次日 00:00 自动解除
+
+说明：
+
+- 登录失效 / Token 失效不再直接拉黑，而是优先自动刷新 Session 并恢复上线
 
 ## 5. 管理接口
 
@@ -177,6 +188,10 @@
 
 - `GET /api/admin/accounts`
 - `POST /api/admin/accounts`
+- `POST /api/admin/accounts/batch/update`
+- `POST /api/admin/accounts/batch/delete`
+- `POST /api/admin/accounts/batch/refresh-invalid-session`
+- `POST /api/admin/accounts/batch/validate-session`
 - `POST /api/admin/accounts/import`
 - `PUT /api/admin/accounts/:id`
 - `DELETE /api/admin/accounts/:id`
@@ -185,6 +200,31 @@
 - `POST /api/admin/accounts/:id/blacklist`
 - `POST /api/admin/accounts/:id/unblacklist`
 
+账号列表接口支持分页参数：
+
+- `page`
+  - 页码，从 `1` 开始
+- `pageSize` / `page_size`
+  - 每页条数，范围 `1-100`
+- `status`
+  - 可选：`all` / `healthy` / `invalid` / `blacklisted`
+  - `invalid` 会同时包含 `expired` 与 `invalid` 两种失效状态
+
+返回结构：
+
+- `items`
+- `page`
+- `pageSize`
+- `total`
+- `totalPages`
+
+账号对象补充字段：
+
+- `region`
+  - 由 `sessionid/sessionid_ss/sid_tt` 前缀推断
+  - `jp-` / `us-` / `hk-` / `sg-` 分别表示日本 / 美国 / 香港 / 新加坡
+  - 没有前缀时兼容按中国区处理
+
 批量导入请求体支持：
 
 - `text`
@@ -192,11 +232,30 @@
   - 也支持 `邮箱----密码----Sessionid=xxx`，第三段会直接按 SessionID 解析
   - 也兼容制表符、`|`、`,` 分隔
 - `defaultProxy`
+- `defaultRegion`
+  - 可选，写入导入账号的 SessionID 前缀
 - `enabled`
 - `autoRefresh`
 - `maxConcurrency`
 - `overwriteExisting`
   - 默认 `true`
+
+批量管理接口：
+
+- `POST /api/admin/accounts/batch/update`
+  - 请求体支持 `ids` 或 `applyToAll=true`
+  - 可同时传 `proxy` 和 `region`
+  - `proxy=""` 表示清空代理
+  - `region` 仍然通过 SessionID 前缀生效；没有 Session 的账号会跳过地区写回
+- `POST /api/admin/accounts/batch/delete`
+  - 请求体支持 `ids` 或 `applyToAll=true`
+- `POST /api/admin/accounts/batch/refresh-invalid-session`
+  - 一键刷新当前所有失效账号的 Session
+  - 只处理未拉黑且状态为 `expired` / `invalid` 的账号
+  - 返回 `matchedCount` / `refreshedCount` / `failedCount`
+- `POST /api/admin/accounts/batch/validate-session`
+  - 一键校验全部账号
+  - 返回 `matchedCount` / `validCount` / `invalidCount` / `failedCount`
 
 ### 5.3 API Key
 
@@ -219,6 +278,12 @@
 ### 5.4 总览
 
 - `GET /api/admin/overview`
+
+说明：
+
+- 返回实时统计、设置和 API Key 列表
+- `counts.totalCapacity` 表示当前账号池总并发承载
+- 不再返回全量 `accounts`，避免后台首页在账号过多时一次性拉取整张账号表
 
 ## 6. Docker 部署
 

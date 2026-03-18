@@ -11,6 +11,19 @@ import { JimengErrorHandler, withRetry } from "@/lib/error-handler.ts";
 import { RETRY_CONFIG } from "@/api/consts/common.ts";
 import { parseMessages, detectRequestType, base64ToBuffer } from "@/lib/message-parser.ts";
 
+type ChatTokenExecutor = <T>(handler: (token: string) => Promise<T>) => Promise<T>;
+
+async function runWithChatToken<T>(
+  refreshToken: string,
+  tokenExecutor: ChatTokenExecutor | undefined,
+  handler: (token: string) => Promise<T>
+) {
+  if (tokenExecutor) {
+    return tokenExecutor(handler);
+  }
+  return handler(refreshToken);
+}
+
 /**
  * 解析模型
  *
@@ -51,7 +64,8 @@ export async function createCompletion(
   refreshToken: string,
   _model = DEFAULT_MODEL,
   options: any = {},
-  retryCount = 0
+  retryCount = 0,
+  tokenExecutor?: ChatTokenExecutor
 ) {
   return (async () => {
     if (messages.length === 0)
@@ -98,11 +112,16 @@ export async function createCompletion(
         }
 
         logger.info(`开始生成视频，模型: ${_model}, 类型: ${requestType}`);
-        const videoUrl = await generateVideo(
-          _model,
-          finalPrompt,
-          videoOptions,
-          refreshToken
+        const videoUrl = await runWithChatToken(
+          refreshToken,
+          tokenExecutor,
+          (currentToken) =>
+            generateVideo(
+              _model,
+              finalPrompt,
+              videoOptions,
+              currentToken
+            )
         );
 
         logger.info(`视频生成成功，URL: ${videoUrl}`);
@@ -157,17 +176,22 @@ export async function createCompletion(
         img.type === 'base64' ? base64ToBuffer(img.base64!) : img.url!
       );
       
-      const resultUrls = await generateImageComposition(
-        model,
-        finalPrompt,
-        imageInputs,
-        {
-          ratio: options.ratio || "1:1",
-          resolution: options.resolution || "2k",
-          sampleStrength: options.sample_strength || 0.5,
-          negativePrompt: options.negative_prompt || "",
-        },
-        refreshToken
+      const resultUrls = await runWithChatToken(
+        refreshToken,
+        tokenExecutor,
+        (currentToken) =>
+          generateImageComposition(
+            model,
+            finalPrompt,
+            imageInputs,
+            {
+              ratio: options.ratio || "1:1",
+              resolution: options.resolution || "2k",
+              sampleStrength: options.sample_strength || 0.5,
+              negativePrompt: options.negative_prompt || "",
+            },
+            currentToken
+          )
       );
 
       logger.info(`图生图完成，生成${resultUrls.length}张图片`);
@@ -195,16 +219,21 @@ export async function createCompletion(
 
     logger.info(`开始文生图，模型: ${_model}`);
     const { model, width, height } = parseModel(_model);
-    const imageUrls = await generateImages(
-      model,
-      finalPrompt,
-      {
-        ratio: options.ratio || "1:1",
-        resolution: options.resolution || "2k",
-        sampleStrength: options.sample_strength || 0.5,
-        negativePrompt: options.negative_prompt || "",
-      },
-      refreshToken
+    const imageUrls = await runWithChatToken(
+      refreshToken,
+      tokenExecutor,
+      (currentToken) =>
+        generateImages(
+          model,
+          finalPrompt,
+          {
+            ratio: options.ratio || "1:1",
+            resolution: options.resolution || "2k",
+            sampleStrength: options.sample_strength || 0.5,
+            negativePrompt: options.negative_prompt || "",
+          },
+          currentToken
+        )
     );
 
     logger.info(`文生图完成，生成${imageUrls.length}张图片`);
@@ -255,7 +284,8 @@ export async function createCompletionStream(
   refreshToken: string,
   _model = DEFAULT_MODEL,
   options: any = {},
-  retryCount = 0
+  retryCount = 0,
+  tokenExecutor?: ChatTokenExecutor
 ) {
   return (async () => {
     logger.info(messages);
@@ -424,11 +454,16 @@ export async function createCompletionStream(
           "\n\n"
       );
 
-      generateVideo(
-        _model,
-        finalPrompt,
-        videoOptions,
-        refreshToken
+      runWithChatToken(
+        refreshToken,
+        tokenExecutor,
+        (currentToken) =>
+          generateVideo(
+            _model,
+            finalPrompt,
+            videoOptions,
+            currentToken
+          )
       )
         .then((videoUrl) => {
           clearInterval(progressInterval);
@@ -540,17 +575,22 @@ export async function createCompletionStream(
         img.type === 'base64' ? base64ToBuffer(img.base64!) : img.url!
       );
 
-      generateImageComposition(
-        model,
-        finalPrompt,
-        imageInputs,
-        {
-          ratio: options.ratio || "1:1",
-          resolution: options.resolution || "2k",
-          sampleStrength: options.sample_strength || 0.5,
-          negativePrompt: options.negative_prompt || "",
-        },
-        refreshToken
+      runWithChatToken(
+        refreshToken,
+        tokenExecutor,
+        (currentToken) =>
+          generateImageComposition(
+            model,
+            finalPrompt,
+            imageInputs,
+            {
+              ratio: options.ratio || "1:1",
+              resolution: options.resolution || "2k",
+              sampleStrength: options.sample_strength || 0.5,
+              negativePrompt: options.negative_prompt || "",
+            },
+            currentToken
+          )
       )
         .then((imageUrls) => {
           if (!stream.destroyed && stream.writable) {
@@ -629,16 +669,21 @@ export async function createCompletionStream(
           "\n\n"
       );
 
-      generateImages(
-        model,
-        finalPrompt,
-        {
-          ratio: options.ratio || "1:1",
-          resolution: options.resolution || "2k",
-          sampleStrength: options.sample_strength || 0.5,
-          negativePrompt: options.negative_prompt || "",
-        },
-        refreshToken
+      runWithChatToken(
+        refreshToken,
+        tokenExecutor,
+        (currentToken) =>
+          generateImages(
+            model,
+            finalPrompt,
+            {
+              ratio: options.ratio || "1:1",
+              resolution: options.resolution || "2k",
+              sampleStrength: options.sample_strength || 0.5,
+              negativePrompt: options.negative_prompt || "",
+            },
+            currentToken
+          )
       )
         .then((imageUrls) => {
           // 检查流是否仍然可写
@@ -729,7 +774,8 @@ export async function createCompletionStream(
           refreshToken,
           _model,
           options,
-          retryCount + 1
+          retryCount + 1,
+          tokenExecutor
         );
       })();
     }

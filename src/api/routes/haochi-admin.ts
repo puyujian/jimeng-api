@@ -3,6 +3,10 @@ import SYSTEM_EX from "@/lib/consts/exceptions.ts";
 import Exception from "@/lib/exceptions/Exception.ts";
 import Response from "@/lib/response/Response.ts";
 import { haochiAccountPoolService, haochiAdminAuthService } from "@/haochi/index.ts";
+import AdminLogService from "@/haochi/services/admin-log-service.ts";
+import { clampNumber } from "@/haochi/utils/crypto.ts";
+
+const adminLogService = new AdminLogService();
 
 function requireAdmin<T>(request: Request, handler: (auth: ReturnType<typeof haochiAdminAuthService.requireUser>) => Promise<T> | T) {
   const auth = haochiAdminAuthService.requireUser(request.headers.cookie);
@@ -71,19 +75,41 @@ export default [
           ...haochiAccountPoolService.getOverview(),
         })),
       "/accounts": async (request: Request) =>
-        requireAdmin(request, async () => ({
-          items: haochiAccountPoolService.listAccounts(),
-        })),
+        requireAdmin(request, async () => {
+          const page = clampNumber(request.query?.page, 1, 9999, 1);
+          const pageSize = clampNumber(request.query?.pageSize ?? request.query?.page_size, 1, 100, 10);
+          return haochiAccountPoolService.listAccountsPage({
+            page,
+            pageSize,
+            status: request.query?.status,
+          });
+        }),
       "/api-keys": async (request: Request) =>
         requireAdmin(request, async () => ({
           items: haochiAccountPoolService.listApiKeys(),
         })),
+      "/logs/outbound": async (request: Request) =>
+        requireAdmin(request, async () =>
+          adminLogService.getOutboundLogs({
+            date: String(request.query?.date || "").trim() || null,
+            keyword: String(request.query?.keyword || "").trim() || null,
+            limit: clampNumber(request.query?.limit, 1, 400, 120),
+          })
+        ),
     },
     post: {
       "/accounts": async (request: Request) =>
         requireAdmin(request, async () => ({
           item: haochiAccountPoolService.createAccount(request.body),
         })),
+      "/accounts/batch/update": async (request: Request) =>
+        requireAdmin(request, async () => haochiAccountPoolService.updateAccountsBatch(request.body)),
+      "/accounts/batch/delete": async (request: Request) =>
+        requireAdmin(request, async () => haochiAccountPoolService.deleteAccountsBatch(request.body)),
+      "/accounts/batch/refresh-invalid-session": async (request: Request) =>
+        requireAdmin(request, async () => haochiAccountPoolService.refreshInvalidAccountsSessions()),
+      "/accounts/batch/validate-session": async (request: Request) =>
+        requireAdmin(request, async () => haochiAccountPoolService.validateAllAccountsSessions()),
       "/accounts/import": async (request: Request) =>
         requireAdmin(request, async () => haochiAccountPoolService.importAccounts(request.body)),
       "/accounts/:id/refresh-session": async (request: Request) =>
