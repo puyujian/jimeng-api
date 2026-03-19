@@ -359,6 +359,27 @@ function effectiveValidationStatus(account: Pick<PoolAccount, "lastValidationSta
   return "valid";
 }
 
+function resolveSteadyAccountStatus(
+  account: Pick<
+    PoolAccount,
+    "enabled" | "blacklisted" | "status" | "sessionTokens" | "lastValidationStatus" | "lastValidatedAt" | "sessionUpdatedAt"
+  >
+): AccountStatus {
+  if (!account.enabled) return "disabled";
+  if (account.blacklisted) {
+    return account.status === "insufficient_credit" ? "insufficient_credit" : "blacklisted";
+  }
+  if (!primaryToken(account)) return "idle";
+  if (
+    account.status === "expired" ||
+    account.status === "invalid" ||
+    effectiveValidationStatus(account) === "invalid"
+  ) {
+    return "expired";
+  }
+  return "healthy";
+}
+
 function normalizedProxyKey(proxy: string | null | undefined) {
   return normalizeProxyUrl(proxy) || "";
 }
@@ -416,6 +437,7 @@ export default class AccountPoolService {
 
   start() {
     if (this.maintenanceTimer) return;
+    this.#recoverStaleRefreshingAccounts();
     const intervalMs = this.settings.maintenanceIntervalSeconds * 1000;
     this.maintenanceTimer = setInterval(() => {
       void this.runMaintenance();
@@ -434,6 +456,52 @@ export default class AccountPoolService {
 
   get settings(): HaochiSettings {
     return this.store.read((state) => ({ ...state.settings }));
+  }
+
+  #recoverStaleRefreshingAccounts() {
+    const staleAccounts = this.store.read((state) =>
+      state.accounts
+        .filter((item) => item.status === "refreshing" && !this.refreshTasks.has(item.id))
+        .map((item) => ({
+          id: item.id,
+          email: item.email,
+          nextStatus: resolveSteadyAccountStatus(item),
+        })),
+    );
+
+    if (!staleAccounts.length) return;
+
+    const staleById = new Map(staleAccounts.map((item) => [item.id, item]));
+    this.store.update((state) => {
+      for (const account of state.accounts) {
+        const stale = staleById.get(account.id);
+        if (!stale) continue;
+        account.status = stale.nextStatus;
+        account.updatedAt = nowIso();
+      }
+    });
+
+    const preview = staleAccounts
+      .slice(0, 5)
+      .map((item) => `${item.email}->${item.nextStatus}`)
+      .join(", ");
+    const suffix = staleAccounts.length > 5 ? " ..." : "";
+    logger.warn(
+      `检测到 ${staleAccounts.length} 个陈旧 refreshing 状态，启动时已恢复为稳态: ${preview}${suffix}`
+    );
+  }
+
+  #markRefreshFailure(accountId: string, reason: string) {
+    const message = String(reason || "自动登录失败").trim() || "自动登录失败";
+    this.store.update((state) => {
+      const target = state.accounts.find((item) => item.id === accountId);
+      if (!target) return;
+      target.status = target.enabled ? "error" : "disabled";
+      target.lastError = message;
+      target.failureCount += 1;
+      target.updatedAt = nowIso();
+    });
+    return message;
   }
 
   #resolveStoredPassword(password: PoolAccount["password"]) {
@@ -1250,17 +1318,17 @@ export default class AccountPoolService {
         target.updatedAt = nowIso();
       });
 
-      const result = await this.loginProvider.login(account);
+      let result;
+      try {
+        result = await this.loginProvider.login(account);
+      } catch (error: any) {
+        const message = this.#markRefreshFailure(accountId, error?.message || String(error));
+        throw createHttpError(message, 502);
+      }
+
       if (!result.success || !result.sessionTokens || !result.sessionTokens.sessionid) {
-        this.store.update((state) => {
-          const target = state.accounts.find((item) => item.id === accountId);
-          if (!target) return;
-          target.status = target.enabled ? "error" : "disabled";
-          target.lastError = result.error || "自动登录失败";
-          target.failureCount += 1;
-          target.updatedAt = nowIso();
-        });
-        throw createHttpError(result.error || "自动登录失败", 502);
+        const message = this.#markRefreshFailure(accountId, result.error || "自动登录失败");
+        throw createHttpError(message, 502);
       }
 
       this.store.update((state) => {

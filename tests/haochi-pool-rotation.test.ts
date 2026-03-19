@@ -199,6 +199,89 @@ test("号池维护任务会在次日自动解除积分黑名单", async (t) => {
   assert.equal(releasedAccount?.status, "healthy");
 });
 
+test("号池启动时会把历史遗留 refreshing 状态恢复成稳态", async (t) => {
+  const { tempDir, store } = createTempStore("rotation-recover-refreshing-on-start");
+  const service = new AccountPoolService(store, createMockProvider());
+  t.after(async () => {
+    await service.stop();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const healthyAccount = service.createAccount({
+    email: "recover-healthy@example.com",
+    password: "p1",
+    sessionId: "mock-session-recover-healthy",
+    autoRefresh: true,
+  });
+  const idleAccount = service.createAccount({
+    email: "recover-idle@example.com",
+    password: "p2",
+    autoRefresh: true,
+  });
+  const expiredAccount = service.createAccount({
+    email: "recover-expired@example.com",
+    password: "p3",
+    sessionId: "mock-session-recover-expired",
+    autoRefresh: true,
+  });
+
+  store.update((state) => {
+    const healthy = state.accounts.find((item) => item.id === healthyAccount.id);
+    const idle = state.accounts.find((item) => item.id === idleAccount.id);
+    const expired = state.accounts.find((item) => item.id === expiredAccount.id);
+    const staleTimestamp = "2026-01-01T00:00:00.000Z";
+    if (healthy) {
+      healthy.status = "refreshing";
+      healthy.lastValidationStatus = "valid";
+      healthy.lastValidatedAt = staleTimestamp;
+      healthy.sessionUpdatedAt = staleTimestamp;
+    }
+    if (idle) {
+      idle.status = "refreshing";
+    }
+    if (expired) {
+      expired.status = "refreshing";
+      expired.lastValidationStatus = "invalid";
+      expired.lastValidatedAt = staleTimestamp;
+      expired.sessionUpdatedAt = staleTimestamp;
+    }
+  });
+
+  service.start();
+
+  const accounts = service.listAccounts();
+  assert.equal(accounts.find((item) => item.id === healthyAccount.id)?.status, "healthy");
+  assert.equal(accounts.find((item) => item.id === idleAccount.id)?.status, "idle");
+  assert.equal(accounts.find((item) => item.id === expiredAccount.id)?.status, "expired");
+});
+
+test("号池在登录 provider 直接抛异常时不会永久卡在 refreshing", async (t) => {
+  const { tempDir, store } = createTempStore("rotation-refresh-throw");
+  const provider: LoginProvider = {
+    name: "mock",
+    async login() {
+      throw new Error("浏览器启动失败");
+    },
+  };
+  const service = new AccountPoolService(store, provider);
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  const account = service.createAccount({
+    email: "refresh-throw@example.com",
+    password: "p1",
+    autoRefresh: true,
+  });
+
+  await assert.rejects(
+    service.refreshAccountSession(account.id, "test"),
+    /浏览器启动失败/
+  );
+
+  const failedAccount = service.listAccounts().find((item) => item.id === account.id);
+  assert.equal(failedAccount?.status, "error");
+  assert.match(failedAccount?.lastError || "", /浏览器启动失败/);
+});
+
 test("号池在登录失效时会先自动续期当前账号再重试", async (t) => {
   const { tempDir, store } = createTempStore("rotation-refresh-current");
   let loginCount = 0;
