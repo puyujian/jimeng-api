@@ -380,21 +380,6 @@ function resolveSteadyAccountStatus(
   return "healthy";
 }
 
-type MaintenanceRefreshReason = "missing_session" | "invalid_session" | "expiring_session";
-
-function maintenanceRefreshPriority(reason: MaintenanceRefreshReason) {
-  switch (reason) {
-    case "missing_session":
-      return 1;
-    case "invalid_session":
-      return 2;
-    case "expiring_session":
-      return 3;
-    default:
-      return 9;
-  }
-}
-
 function normalizedProxyKey(proxy: string | null | undefined) {
   return normalizeProxyUrl(proxy) || "";
 }
@@ -679,48 +664,6 @@ export default class AccountPoolService {
     );
     if (!apiKey) throw createHttpError("API Key 不存在", 404);
     return apiKey;
-  }
-
-  #isSessionExpiring(account: PoolAccount, bufferMinutes = this.settings.sessionRefreshBufferMinutes) {
-    const token = primaryToken(account);
-    if (!token) return true;
-    if (!account.sessionExpiresAt) return false;
-    return new Date(account.sessionExpiresAt).getTime() <= Date.now() + bufferMinutes * 60 * 1000;
-  }
-
-  #maintenanceRefreshBufferMinutes() {
-    const sessionBuffer = clampNumber(
-      this.settings.sessionRefreshBufferMinutes,
-      1,
-      12 * 60,
-      30
-    );
-    const maintenanceBuffer = clampNumber(
-      this.settings.maintenanceRefreshBufferMinutes,
-      1,
-      12 * 60,
-      Math.min(10, sessionBuffer)
-    );
-    return Math.min(sessionBuffer, maintenanceBuffer);
-  }
-
-  #maintenanceMaxRefreshPerRun() {
-    return clampNumber(this.settings.maintenanceMaxRefreshPerRun, 1, 100, 6);
-  }
-
-  #getMaintenanceRefreshReason(account: PoolAccount): MaintenanceRefreshReason | null {
-    if (!primaryToken(account)) return "missing_session";
-    if (
-      account.status === "expired" ||
-      account.status === "invalid" ||
-      effectiveValidationStatus(account) === "invalid"
-    ) {
-      return "invalid_session";
-    }
-    if (this.#isSessionExpiring(account, this.#maintenanceRefreshBufferMinutes())) {
-      return "expiring_session";
-    }
-    return null;
   }
 
   getActiveLeaseCount(accountId: string) {
@@ -1413,6 +1356,21 @@ export default class AccountPoolService {
     return task;
   }
 
+  #scheduleBackgroundSessionRefresh(accountId: string, source: string) {
+    const stored = this.store.read((state) => state.accounts.find((item) => item.id === accountId) || null);
+    if (!stored) return false;
+    const account = this.#materializeAccount(stored);
+    if (!account.password || !account.autoRefresh) return false;
+
+    logger.info(`账号 ${account.email} 已切出当前请求，后台准备刷新 Session，来源=${source}`);
+    queueMicrotask(() => {
+      void this.refreshAccountSession(accountId, source).catch((error: any) => {
+        logger.warn(`账号 ${account.email} 后台刷新 Session 失败: ${error?.message || error}`);
+      });
+    });
+    return true;
+  }
+
   async validateAccountSession(accountId: string) {
     const account = this.#materializeAccount(this.#requireAccount(accountId));
     const token = this.#buildRequestToken(account);
@@ -1623,53 +1581,6 @@ export default class AccountPoolService {
     return tokens[index];
   }
 
-  async #ensureAccountReady(accountId: string, trigger: string) {
-    const stored = this.#requireAccount(accountId);
-    if (!stored.enabled) throw createHttpError(`账号 ${stored.email} 已禁用`, 403);
-    if (stored.blacklisted) throw createHttpError(`账号 ${stored.email} 已被拉黑`, 409);
-
-    let materialized = this.#materializeAccount(stored);
-    const hasPrimaryToken = Boolean(primaryToken(materialized));
-    const canAutoRecover = Boolean(materialized.password && materialized.autoRefresh);
-    let validationStatus = effectiveValidationStatus(materialized);
-
-    if (!hasPrimaryToken) {
-      if (!canAutoRecover) {
-        throw createHttpError(`账号 ${stored.email} 缺少 Session 且无法自动恢复`, 409);
-      }
-      await this.refreshAccountSession(accountId, trigger);
-      return this.#materializeAccount(this.#requireAccount(accountId));
-    }
-
-    if (this.loginProvider.name !== "mock" && validationStatus === "unknown") {
-      const validation = await this.validateAccountSession(accountId);
-      materialized = this.#materializeAccount(this.#requireAccount(accountId));
-      validationStatus = effectiveValidationStatus(materialized);
-      if (!validation.valid) {
-        if (!canAutoRecover) {
-          throw createHttpError(`账号 ${stored.email} Session 已失效且无法自动恢复`, 409);
-        }
-      }
-    }
-
-    if (!this.#isSessionExpiring(materialized)) {
-      if (validationStatus === "invalid") {
-        if (!canAutoRecover) {
-          throw createHttpError(`账号 ${stored.email} Session 已失效且无法自动恢复`, 409);
-        }
-      } else {
-        return materialized;
-      }
-    }
-
-    if (!canAutoRecover) {
-      return materialized;
-    }
-
-    await this.refreshAccountSession(accountId, trigger);
-    return this.#materializeAccount(this.#requireAccount(accountId));
-  }
-
   async #markAccountSuccess(accountId: string) {
     this.store.update((state) => {
       const target = state.accounts.find((item) => item.id === accountId);
@@ -1750,97 +1661,19 @@ export default class AccountPoolService {
     return dueAccounts;
   }
 
-  async #retryCurrentAccountAfterRefresh<T>(
-    accountId: string,
-    ability: PoolAbility,
-    apiKeyId: string,
-    handler: (token: string, context: { mode: "legacy" | "pool"; accountId?: string; apiKeyId?: string }) => Promise<T>,
-    error: any
-  ) {
-    const classified = this.#classifyAccountError(error);
-    if (!classified.retryable || classified.status !== "invalid") {
-      return {
-        recovered: false,
-        error,
-      } as const;
-    }
-
-    const account = this.#materializeAccount(this.#requireAccount(accountId));
-    if (!account.password || !account.autoRefresh) {
-      return {
-        recovered: false,
-        error,
-      } as const;
-    }
-
-    logger.warn(`账号 ${account.email} 命中登录失效，尝试自动刷新 Session 后重试`);
-
-    try {
-      await this.refreshAccountSession(accountId, `request-recover:${ability}`);
-    } catch (refreshError: any) {
-      logger.warn(
-        `账号 ${account.email} 自动刷新重试失败，准备切换下一个账号: ${refreshError?.message || refreshError}`
-      );
-      const refreshMessage = refreshError?.message || String(refreshError || error || "自动刷新重试失败");
-      return {
-        recovered: false,
-        error: new APIException(
-          API_EX.API_TOKEN_EXPIRES,
-          `登录失效，自动刷新失败: ${refreshMessage}`
-        ),
-      } as const;
-    }
-
-    const refreshed = this.#materializeAccount(this.#requireAccount(accountId));
-    const nextToken = this.#buildRequestToken(refreshed);
-    if (!nextToken) {
-      return {
-        recovered: false,
-        error: new APIException(
-          API_EX.API_TOKEN_EXPIRES,
-          `登录失效，自动刷新后仍缺少可用 Session: ${refreshed.email}`
-        ),
-      } as const;
-    }
-
-    try {
-      const result = await runWithOutboundLogContext(
-        buildOutboundContext(ability, "pool", {
-          accountId,
-          accountEmail: refreshed.email,
-          apiKeyId,
-        }),
-        () =>
-          handler(nextToken, {
-            mode: "pool",
-            accountId,
-            apiKeyId,
-          })
-      );
-      await this.#markAccountSuccess(accountId);
-      await this.#markApiKeyUsed(apiKeyId);
-      logger.info(`账号 ${refreshed.email} 自动刷新后重试成功`);
-      return {
-        recovered: true,
-        result,
-      } as const;
-    } catch (retryError: any) {
-      logger.warn(
-        `账号 ${refreshed.email} 自动刷新后再次请求失败，准备继续切换: ${retryError?.message || retryError}`
-      );
-      return {
-        recovered: false,
-        error: retryError,
-      } as const;
-    }
-  }
-
   async #selectManagedAccount(ability: PoolAbility, excludedIds: Set<string>) {
     this.#releaseExpiredBlacklistedAccounts();
     const state = this.store.read((current) => current);
     const proxyLeaseCounts = this.#buildProxyLeaseCounts(state.accounts);
     const candidates = state.accounts
-      .filter((item) => item.enabled && !item.blacklisted && !excludedIds.has(item.id))
+      .filter(
+        (item) =>
+          item.enabled &&
+          !item.blacklisted &&
+          item.status !== "refreshing" &&
+          !excludedIds.has(item.id) &&
+          Boolean(primaryToken(item))
+      )
       .sort((a, b) => {
         const leaseDiff = this.getActiveLeaseCount(a.id) - this.getActiveLeaseCount(b.id);
         if (leaseDiff !== 0) return leaseDiff;
@@ -1864,17 +1697,13 @@ export default class AccountPoolService {
       });
 
     for (const candidate of candidates) {
-      try {
-        const ready = await this.#ensureAccountReady(candidate.id, `request:${ability}`);
-        const lease = this.#acquireLease(ready, ability);
-        if (!lease) continue;
-        return {
-          account: ready,
-          lease,
-        };
-      } catch (error: any) {
-        logger.warn(`账号 ${candidate.email} 暂不可用，跳过: ${error?.message || error}`);
-      }
+      const materialized = this.#materializeAccount(candidate);
+      const lease = this.#acquireLease(materialized, ability);
+      if (!lease) continue;
+      return {
+        account: materialized,
+        lease,
+      };
     }
     return null;
   }
@@ -1942,21 +1771,12 @@ export default class AccountPoolService {
         return result;
       } catch (error: any) {
         lastError = error;
-        const recovered = await this.#retryCurrentAccountAfterRefresh(
-          selected.account.id,
-          ability,
-          managedApiKey.id,
-          handler,
-          error
-        );
-        if (recovered.recovered) {
-          return recovered.result;
-        }
-
-        lastError = recovered.error;
-        const classified = await this.#markAccountFailure(selected.account.id, recovered.error);
+        const classified = await this.#markAccountFailure(selected.account.id, error);
         triedIds.add(selected.account.id);
-        if (!classified.retryable) throw recovered.error;
+        if (classified.retryable && classified.status === "invalid") {
+          this.#scheduleBackgroundSessionRefresh(selected.account.id, `request-failed:${ability}`);
+        }
+        if (!classified.retryable) throw error;
       } finally {
         selected.lease.release();
       }
@@ -1970,76 +1790,55 @@ export default class AccountPoolService {
     this.maintenanceRunning = true;
     try {
       this.#releaseExpiredBlacklistedAccounts();
-      const refreshLimit = this.#maintenanceMaxRefreshPerRun();
       const candidates = this.store
         .read((state) =>
           state.accounts
-            .filter((item) => item.enabled && item.autoRefresh && !item.blacklisted)
+            .filter((item) => item.enabled && !item.blacklisted && item.status !== "refreshing")
             .map((item) => this.#materializeAccount(item))
-            .filter((item) => Boolean(item.password))
+            .filter((item) => Boolean(primaryToken(item)))
             .filter((item) => this.getActiveLeaseCount(item.id) === 0)
-            .map((item) => ({
-              account: item,
-              reason: this.#getMaintenanceRefreshReason(item),
-              sessionExpiresAtMs: parseIsoMs(item.sessionExpiresAt),
-              lastLoginAtMs: parseIsoMs(item.lastLoginAt),
-              updatedAtMs: parseIsoMs(item.updatedAt),
-            }))
-            .filter(
-              (
-                item
-              ): item is {
-                account: PoolAccount;
-                reason: MaintenanceRefreshReason;
-                sessionExpiresAtMs: number | null;
-                lastLoginAtMs: number | null;
-                updatedAtMs: number | null;
-              } => item.reason !== null
-            )
+            .filter((item) => !this.refreshTasks.has(item.id))
             .sort((a, b) => {
-              const priorityDiff =
-                maintenanceRefreshPriority(a.reason) - maintenanceRefreshPriority(b.reason);
-              if (priorityDiff !== 0) return priorityDiff;
-              const expiresDiff =
-                (a.sessionExpiresAtMs ?? Number.MIN_SAFE_INTEGER) -
-                (b.sessionExpiresAtMs ?? Number.MIN_SAFE_INTEGER);
-              if (expiresDiff !== 0) return expiresDiff;
-              const loginDiff =
-                (a.lastLoginAtMs ?? Number.MIN_SAFE_INTEGER) -
-                (b.lastLoginAtMs ?? Number.MIN_SAFE_INTEGER);
-              if (loginDiff !== 0) return loginDiff;
+              const validatedDiff =
+                (parseIsoMs(a.lastValidatedAt) ?? Number.MIN_SAFE_INTEGER) -
+                (parseIsoMs(b.lastValidatedAt) ?? Number.MIN_SAFE_INTEGER);
+              if (validatedDiff !== 0) return validatedDiff;
               const updatedDiff =
-                (a.updatedAtMs ?? Number.MIN_SAFE_INTEGER) -
-                (b.updatedAtMs ?? Number.MIN_SAFE_INTEGER);
+                (parseIsoMs(a.updatedAt) ?? Number.MIN_SAFE_INTEGER) -
+                (parseIsoMs(b.updatedAt) ?? Number.MIN_SAFE_INTEGER);
               if (updatedDiff !== 0) return updatedDiff;
-              return a.account.email.localeCompare(b.account.email);
-            }),
+              return a.email.localeCompare(b.email);
+            })
+            .map((item) => ({
+              id: item.id,
+              email: item.email,
+            }))
         )
-        .slice(0, refreshLimit);
 
       if (!candidates.length) return;
+      logger.info(`维护任务开始每日检测 Session: 候选账号 ${candidates.length} 个`);
 
-      const totalPending = this.store.read((state) =>
-        state.accounts
-          .filter((item) => item.enabled && item.autoRefresh && !item.blacklisted)
-          .map((item) => this.#materializeAccount(item))
-          .filter((item) => Boolean(item.password))
-          .filter((item) => this.getActiveLeaseCount(item.id) === 0)
-          .filter((item) => this.#getMaintenanceRefreshReason(item) !== null).length
-      );
-      if (totalPending > candidates.length) {
-        logger.info(
-          `维护任务待刷新账号 ${totalPending} 个，本轮限流处理 ${candidates.length} 个，剩余 ${totalPending - candidates.length} 个留待后续轮次`
-        );
-      }
+      let validCount = 0;
+      let invalidCount = 0;
+      let failedCount = 0;
 
       for (const candidate of candidates) {
         try {
-          await this.refreshAccountSession(candidate.account.id, "maintenance");
+          const result = await this.validateAccountSession(candidate.id);
+          if (result.valid) {
+            validCount += 1;
+          } else {
+            invalidCount += 1;
+          }
         } catch (error: any) {
-          logger.warn(`维护任务刷新账号 ${candidate.account.email} 失败: ${error?.message || error}`);
+          failedCount += 1;
+          logger.warn(`维护任务校验账号 ${candidate.email} 失败: ${error?.message || error}`);
         }
       }
+
+      logger.info(
+        `维护任务 Session 检测完成: 总计 ${candidates.length} 个, 有效 ${validCount} 个, 失效 ${invalidCount} 个, 失败 ${failedCount} 个`
+      );
     } finally {
       this.maintenanceRunning = false;
     }

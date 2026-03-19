@@ -7,7 +7,7 @@
 - 管理员登录后才能编辑
 - 前端 WebUI 管理账号与 API Key
 - 账号密码自动登录 Dreamina，自动获取 SessionID
-- Session 到期前自动续期
+- Session 失效后后台异步恢复
 - 外部调用方使用独立 API Key
 - `/v1/images/*`、`/v1/videos/*`、`/v1/chat/*` 自动从健康账号池里取号
 - 当账号失效或积分耗尽时自动拉黑并切换下一个账号
@@ -82,10 +82,10 @@
 
 1. 解析外部 API Key
 2. 校验该 Key 是否有对应能力权限
-3. 从健康账号中挑选最合适的账号
-4. 若 Session 过期或即将过期，先自动刷新
-5. 执行上游请求
-6. 若命中“失效 / 积分不足(1006) / 当日生成额度耗尽(121101)”则自动拉黑该账号并切换下一个账号
+3. 从已有可用 Session 的账号里挑选最合适的账号
+4. 直接执行上游请求，不在分配前做 Session 校验或续期
+5. 若命中 `session/token` 失效，先切换下一个账号继续请求，再把失败账号放到后台异步刷新 Session
+6. 若命中“积分不足(1006) / 当日生成额度耗尽(121101)”则自动拉黑该账号并切换下一个账号
 
 账号如果配置了代理：
 
@@ -146,23 +146,20 @@
 2. 状态更健康
 3. 最近使用时间更早
 
-### 4.2 自动刷新
+### 4.2 Session 维护
 
 默认配置：
 
 - `sessionTtlMinutes=360`
-- `sessionRefreshBufferMinutes=30`
-- `maintenanceIntervalSeconds=180`
-- `maintenanceRefreshBufferMinutes=10`
-- `maintenanceMaxRefreshPerRun=6`
+- `maintenanceIntervalSeconds=86400`
 
 逻辑：
 
-- 请求进来时先判断 Session 是否缺失或即将过期
-- 请求执行中若命中 `session/token` 失效，会优先自动刷新当前账号并重试
-- 后台维护定时器会分批刷新账号：优先处理无 Session / 已失效账号，再处理临近过期账号
-- 后台预刷新使用独立的更小窗口，避免把大量健康账号提前 30 分钟一起拉起登录
-- 单轮维护刷新数量受 `maintenanceMaxRefreshPerRun` 限制，超出的候选账号留到后续轮次或请求时按需刷新
+- 后台维护定时器默认一天跑一次，只做 Session 检测，不做定时批量刷新
+- 维护任务只校验“启用、未拉黑、当前已有 Session、没有活跃租约”的账号
+- 请求分配前不再做 Session 校验或预刷新，减少请求前阻塞
+- 请求执行中若命中 `session/token` 失效，会立即切换下一个账号继续处理
+- 失败账号若配置了密码且允许自动恢复，会在后台异步刷新 Session，供后续请求复用
 
 ### 4.3 自动拉黑
 
@@ -179,7 +176,7 @@
 
 说明：
 
-- 登录失效 / Token 失效不再直接拉黑，而是优先自动刷新 Session 并恢复上线
+- 登录失效 / Token 失效不再直接拉黑，而是先切换账号，再把失败账号放到后台异步恢复
 
 ## 5. 管理接口
 
@@ -353,12 +350,9 @@ docker compose up -d --build
 - `HAOCHI_LOGIN_HEADLESS`
   - Docker 默认 `1`
   - 若首登遇到验证码，建议本地临时改 `0` 人工辅助一次
-- `HAOCHI_MAINTENANCE_REFRESH_BUFFER_MINUTES`
-  - 控制后台维护任务对“健康但快过期”账号的预刷新窗口
-  - 建议默认 `10`，避免对大量健康账号过早批量登录
-- `HAOCHI_MAINTENANCE_MAX_REFRESH_PER_RUN`
-  - 控制后台维护任务每轮最多刷新多少个账号
-  - 建议默认 `6`，把 Chromium 登录压力摊到多个维护周期
+- `HAOCHI_MAINTENANCE_INTERVAL_SECONDS`
+  - 控制后台 Session 检测周期
+  - 默认 `86400`，即每天检测一次
 - `HAOCHI_PROXY_MAX_CONCURRENCY`
   - 默认 `0`，表示不限制同一代理出口的并发
   - 如果多个账号共用同一条代理，建议先从 `1` 或 `2` 开始，减少上游排队和代理拒连
@@ -368,8 +362,7 @@ docker compose up -d --build
 
 ### 6.4 Docker 资源限制
 
-- `maintenanceMaxRefreshPerRun` 负责限制“单轮要刷多少个账号”，解决的是长时间连续拉起 Chromium 的问题
-- `cpus: "1.0"` 负责限制“单次登录最高能吃多少 CPU”，解决的是单个 Chromium 登录瞬时冲高的问题
+- `cpus: "1.0"` 负责限制“单次登录最高能吃多少 CPU”，解决的是后台异步恢复 Session 时单个 Chromium 登录瞬时冲高的问题
 - 推荐保持这两层同时开启：前者控持续时长，后者控峰值
 
 ## 7. 外部调用示例

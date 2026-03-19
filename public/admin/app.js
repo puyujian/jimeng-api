@@ -725,7 +725,7 @@ function renderAccounts(accounts, options = {}) {
             <strong class="table-title">${escapeHtml(item.email)}</strong>
             <div class="pill-row">
               <span class="pill ${item.enabled ? "ok" : "warn"}">${item.enabled ? "启用" : "停用"}</span>
-              <span class="pill">${item.autoRefresh ? "自动续期" : "手动续期"}</span>
+              <span class="pill">${item.autoRefresh ? "自动恢复" : "手动处理"}</span>
               <span class="pill">${escapeHtml(regionLabel(item.region))}</span>
             </div>
             <div class="table-subline">${escapeHtml(item.notes || "无备注")}</div>

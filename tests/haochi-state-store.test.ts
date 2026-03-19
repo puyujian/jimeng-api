@@ -25,7 +25,6 @@ test("显式环境变量会覆盖旧 state.json 中的号池设置并回写", (t
         updatedAt: "2026-03-19T00:00:00.000Z",
         settings: {
           sessionTtlMinutes: 360,
-          sessionRefreshBufferMinutes: 30,
           maintenanceIntervalSeconds: 180,
           defaultAccountMaxConcurrency: 2,
           maxProxyConcurrency: 0,

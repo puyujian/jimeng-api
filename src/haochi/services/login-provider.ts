@@ -33,7 +33,7 @@ function ensurePassword(account: PoolAccount) {
   return account.password;
 }
 
-function primarySessionToken(account: PoolAccount) {
+function primarySessionToken(account: Pick<PoolAccount, "sessionTokens">) {
   return (
     account.sessionTokens?.sessionid ||
     account.sessionTokens?.sessionid_ss ||

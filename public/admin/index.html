@@ -22,11 +22,11 @@
           <h1>把账号池、Session、密钥和调度状态压进同一个运维控制台。</h1>
           <p class="hero-copy">
             这个后台面向 Dreamina 号池运营场景，重点服务账号可用性维护、
-            API Key 发放、Session 续期和健康调度，不再让关键状态散落在脚本、
+            API Key 发放、Session 恢复和健康调度，不再让关键状态散落在脚本、
             Docker 日志和临时表格里。
           </p>
           <div class="hero-tags">
-            <span>Session 自动续期</span>
+            <span>Session 异步恢复</span>
             <span>黑名单可追溯</span>
             <span>并发租约透明</span>
             <span>OpenAI 兼容出口</span>
@@ -220,7 +220,7 @@
                 </label>
                 <label class="checkbox-field">
                   <input id="account-auto-refresh" type="checkbox" checked />
-                  <span>允许自动续期</span>
+                  <span>允许自动恢复 Session</span>
                 </label>
                 <label class="full-span">
                   <span>备注</span>
@@ -276,7 +276,7 @@
                   </label>
                   <label class="checkbox-field">
                     <input id="account-import-auto-refresh" type="checkbox" checked />
-                    <span>允许自动续期</span>
+                    <span>允许自动恢复 Session</span>
                   </label>
                   <label class="checkbox-field full-span">
                     <input id="account-import-overwrite" type="checkbox" checked />
