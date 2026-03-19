@@ -6,6 +6,10 @@ import logger from "@/lib/logger.ts";
 import type { HaochiSettings, HaochiState } from "@/haochi/types.ts";
 import { clampNumber, deepClone, nowIso } from "@/haochi/utils/crypto.ts";
 
+function hasExplicitEnv(name: string) {
+  return Object.prototype.hasOwnProperty.call(process.env, name);
+}
+
 function defaultSettings(): HaochiSettings {
   return {
     sessionTtlMinutes: clampNumber(process.env.HAOCHI_SESSION_TTL_MINUTES, 30, 24 * 60, 360),
@@ -34,6 +38,57 @@ function defaultSettings(): HaochiSettings {
   };
 }
 
+function explicitEnvSettings(): Partial<HaochiSettings> {
+  const overrides: Partial<HaochiSettings> = {};
+  if (hasExplicitEnv("HAOCHI_SESSION_TTL_MINUTES")) {
+    overrides.sessionTtlMinutes = clampNumber(process.env.HAOCHI_SESSION_TTL_MINUTES, 30, 24 * 60, 360);
+  }
+  if (hasExplicitEnv("HAOCHI_SESSION_REFRESH_BUFFER_MINUTES")) {
+    overrides.sessionRefreshBufferMinutes = clampNumber(
+      process.env.HAOCHI_SESSION_REFRESH_BUFFER_MINUTES,
+      5,
+      12 * 60,
+      30,
+    );
+  }
+  if (hasExplicitEnv("HAOCHI_MAINTENANCE_INTERVAL_SECONDS")) {
+    overrides.maintenanceIntervalSeconds = clampNumber(
+      process.env.HAOCHI_MAINTENANCE_INTERVAL_SECONDS,
+      15,
+      3600,
+      180,
+    );
+  }
+  if (hasExplicitEnv("HAOCHI_ACCOUNT_MAX_CONCURRENCY")) {
+    overrides.defaultAccountMaxConcurrency = clampNumber(process.env.HAOCHI_ACCOUNT_MAX_CONCURRENCY, 1, 20, 2);
+  }
+  if (hasExplicitEnv("HAOCHI_PROXY_MAX_CONCURRENCY")) {
+    overrides.maxProxyConcurrency = clampNumber(process.env.HAOCHI_PROXY_MAX_CONCURRENCY, 0, 20, 0);
+  }
+  if (hasExplicitEnv("HAOCHI_MAX_REQUEST_RETRIES")) {
+    overrides.maxRequestRetries = clampNumber(process.env.HAOCHI_MAX_REQUEST_RETRIES, 1, 10, 3);
+  }
+  if (hasExplicitEnv("HAOCHI_ALLOW_LEGACY_AUTHORIZATION")) {
+    overrides.allowLegacyAuthorization = process.env.HAOCHI_ALLOW_LEGACY_AUTHORIZATION !== "0";
+  }
+  if (hasExplicitEnv("HAOCHI_LOGIN_PROVIDER")) {
+    overrides.loginProvider = String(process.env.HAOCHI_LOGIN_PROVIDER || "dreamina").trim().toLowerCase();
+  }
+  return overrides;
+}
+
+function describeExplicitSettingOverrides(
+  persisted: Partial<HaochiSettings> | null | undefined,
+  overrides: Partial<HaochiSettings>,
+) {
+  const changes: string[] = [];
+  for (const [key, value] of Object.entries(overrides) as Array<[keyof HaochiSettings, HaochiSettings[keyof HaochiSettings]]>) {
+    if (persisted?.[key] === value) continue;
+    changes.push(`${String(key)}=${JSON.stringify(persisted?.[key] ?? null)} -> ${JSON.stringify(value)}`);
+  }
+  return changes;
+}
+
 function buildDefaultState(): HaochiState {
   return {
     version: 1,
@@ -45,7 +100,10 @@ function buildDefaultState(): HaochiState {
   };
 }
 
-function normalizeState(raw: Partial<HaochiState> | null | undefined): HaochiState {
+function normalizeState(
+  raw: Partial<HaochiState> | null | undefined,
+  overrides: Partial<HaochiSettings> = explicitEnvSettings(),
+): HaochiState {
   const base = buildDefaultState();
   const state = raw || {};
   return {
@@ -54,6 +112,7 @@ function normalizeState(raw: Partial<HaochiState> | null | undefined): HaochiSta
     settings: {
       ...base.settings,
       ...(state.settings || {}),
+      ...overrides,
     },
     admins: Array.isArray(state.admins) ? state.admins : [],
     accounts: Array.isArray(state.accounts) ? state.accounts : [],
@@ -126,8 +185,15 @@ export default class HaochiStateStore {
 
     try {
       const raw = fs.readFileSync(this.filePath, "utf8");
-      this.#state = normalizeState(raw.trim() ? JSON.parse(raw) : null);
-      this.#dirty = false;
+      const parsed = raw.trim() ? JSON.parse(raw) : null;
+      const overrides = explicitEnvSettings();
+      this.#state = normalizeState(parsed, overrides);
+      const overrideChanges = describeExplicitSettingOverrides(parsed?.settings, overrides);
+      this.#dirty = overrideChanges.length > 0;
+      if (overrideChanges.length > 0) {
+        logger.info(`号池设置已按环境变量覆盖并回写状态文件: ${overrideChanges.join(", ")}`);
+        this.flushSync();
+      }
     } catch (error: any) {
       logger.error(`读取号池状态文件失败，已回退默认状态: ${error?.message || error}`);
       this.#state = buildDefaultState();

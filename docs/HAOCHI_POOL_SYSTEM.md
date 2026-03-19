@@ -20,6 +20,7 @@
 - `src/haochi/storage/state-store.ts`
   - 用 JSON 持久化状态，默认路径 `data/haochi/state.json`
   - 持久化管理员、账号池、API Key、调度配置
+  - 显式设置的 `HAOCHI_*` 调度环境变量会在启动时覆盖同名旧配置并回写
 - `src/haochi/services/admin-auth-service.ts`
   - 管理员登录、Cookie 会话、改密
   - 默认初始化管理员：`admin / ChangeMe123!`
@@ -324,6 +325,10 @@ docker compose up -d --build
 
 - `HAOCHI_ADMIN_USERNAME` / `HAOCHI_ADMIN_PASSWORD` 只会在 `admins` 为空时初始化一次
 - 如果 `data/haochi/state.json` 已存在，容器重启或改环境变量不会覆盖旧密码
+- 但显式设置的 `HAOCHI_SESSION_*`、`HAOCHI_MAINTENANCE_INTERVAL_SECONDS`、
+  `HAOCHI_PROXY_MAX_CONCURRENCY`、`HAOCHI_MAX_REQUEST_RETRIES`、
+  `HAOCHI_ALLOW_LEGACY_AUTHORIZATION`、`HAOCHI_LOGIN_PROVIDER`
+  会在启动时覆盖 `state.json` 里的同名旧设置
 - Docker 挂载了旧数据卷时，请优先使用历史密码登录，或在确认影响范围后删除状态文件重新初始化
 
 ### 6.3 关键环境变量
