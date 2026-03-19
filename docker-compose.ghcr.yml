@@ -6,6 +6,7 @@ services:
     # ghcr 镜像默认以非 root 用户运行；Linux 宿主机 bind mount 若未给 1001 写权限会导致 data/logs 落盘失败
     user: "0:0"
     restart: unless-stopped
+    cpus: "1.0"
     ports:
       - "5100:5100"
     environment:
@@ -16,6 +17,8 @@ services:
       HAOCHI_LOGIN_HEADLESS: 1
       HAOCHI_PROXY_MAX_CONCURRENCY: 2
       HAOCHI_MAINTENANCE_INTERVAL_SECONDS: 600
+      HAOCHI_MAINTENANCE_REFRESH_BUFFER_MINUTES: 10
+      HAOCHI_MAINTENANCE_MAX_REFRESH_PER_RUN: 6
       HAOCHI_STATE_FLUSH_INTERVAL_MS: 1000
       HAOCHI_ADMIN_USERNAME: admin
       HAOCHI_ADMIN_PASSWORD: ChangeMe123!

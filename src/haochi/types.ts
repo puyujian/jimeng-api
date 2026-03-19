@@ -99,6 +99,8 @@ export interface HaochiSettings {
   sessionTtlMinutes: number;
   sessionRefreshBufferMinutes: number;
   maintenanceIntervalSeconds: number;
+  maintenanceRefreshBufferMinutes: number;
+  maintenanceMaxRefreshPerRun: number;
   defaultAccountMaxConcurrency: number;
   maxProxyConcurrency: number;
   maxRequestRetries: number;

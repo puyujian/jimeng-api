@@ -153,12 +153,16 @@
 - `sessionTtlMinutes=360`
 - `sessionRefreshBufferMinutes=30`
 - `maintenanceIntervalSeconds=180`
+- `maintenanceRefreshBufferMinutes=10`
+- `maintenanceMaxRefreshPerRun=6`
 
 逻辑：
 
 - 请求进来时先判断 Session 是否缺失或即将过期
 - 请求执行中若命中 `session/token` 失效，会优先自动刷新当前账号并重试
-- 后台维护定时器也会周期性刷新即将过期、已失效或已过期的账号
+- 后台维护定时器会分批刷新账号：优先处理无 Session / 已失效账号，再处理临近过期账号
+- 后台预刷新使用独立的更小窗口，避免把大量健康账号提前 30 分钟一起拉起登录
+- 单轮维护刷新数量受 `maintenanceMaxRefreshPerRun` 限制，超出的候选账号留到后续轮次或请求时按需刷新
 
 ### 4.3 自动拉黑
 
@@ -304,6 +308,12 @@
 docker compose up -d --build
 ```
 
+说明：
+
+- 仓库内置的 `docker-compose.yml` / `docker-compose.ghcr.yml` 默认限制 `cpus: "1.0"`
+- 这是给 Dreamina 真实登录链路加的硬上限，避免单次 Headless Chromium 登录把容器持续打到 `100%+`
+- 如果你更看重登录吞吐而不是 CPU 安静度，可以按宿主机余量手动提高到 `1.5` 或 `2.0`
+
 ### 6.2 首次访问
 
 - 管理后台：`http://<host>:5100/admin`
@@ -343,12 +353,24 @@ docker compose up -d --build
 - `HAOCHI_LOGIN_HEADLESS`
   - Docker 默认 `1`
   - 若首登遇到验证码，建议本地临时改 `0` 人工辅助一次
+- `HAOCHI_MAINTENANCE_REFRESH_BUFFER_MINUTES`
+  - 控制后台维护任务对“健康但快过期”账号的预刷新窗口
+  - 建议默认 `10`，避免对大量健康账号过早批量登录
+- `HAOCHI_MAINTENANCE_MAX_REFRESH_PER_RUN`
+  - 控制后台维护任务每轮最多刷新多少个账号
+  - 建议默认 `6`，把 Chromium 登录压力摊到多个维护周期
 - `HAOCHI_PROXY_MAX_CONCURRENCY`
   - 默认 `0`，表示不限制同一代理出口的并发
   - 如果多个账号共用同一条代理，建议先从 `1` 或 `2` 开始，减少上游排队和代理拒连
   - 如果账号已经分散到多条代理，这个值可以帮助调度优先把请求摊到不同出口
 - `PUPPETEER_EXECUTABLE_PATH`
   - Docker 默认 `/usr/bin/chromium-browser`
+
+### 6.4 Docker 资源限制
+
+- `maintenanceMaxRefreshPerRun` 负责限制“单轮要刷多少个账号”，解决的是长时间连续拉起 Chromium 的问题
+- `cpus: "1.0"` 负责限制“单次登录最高能吃多少 CPU”，解决的是单个 Chromium 登录瞬时冲高的问题
+- 推荐保持这两层同时开启：前者控持续时长，后者控峰值
 
 ## 7. 外部调用示例
 

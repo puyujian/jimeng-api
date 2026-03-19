@@ -380,6 +380,21 @@ function resolveSteadyAccountStatus(
   return "healthy";
 }
 
+type MaintenanceRefreshReason = "missing_session" | "invalid_session" | "expiring_session";
+
+function maintenanceRefreshPriority(reason: MaintenanceRefreshReason) {
+  switch (reason) {
+    case "missing_session":
+      return 1;
+    case "invalid_session":
+      return 2;
+    case "expiring_session":
+      return 3;
+    default:
+      return 9;
+  }
+}
+
 function normalizedProxyKey(proxy: string | null | undefined) {
   return normalizeProxyUrl(proxy) || "";
 }
@@ -671,6 +686,41 @@ export default class AccountPoolService {
     if (!token) return true;
     if (!account.sessionExpiresAt) return false;
     return new Date(account.sessionExpiresAt).getTime() <= Date.now() + bufferMinutes * 60 * 1000;
+  }
+
+  #maintenanceRefreshBufferMinutes() {
+    const sessionBuffer = clampNumber(
+      this.settings.sessionRefreshBufferMinutes,
+      1,
+      12 * 60,
+      30
+    );
+    const maintenanceBuffer = clampNumber(
+      this.settings.maintenanceRefreshBufferMinutes,
+      1,
+      12 * 60,
+      Math.min(10, sessionBuffer)
+    );
+    return Math.min(sessionBuffer, maintenanceBuffer);
+  }
+
+  #maintenanceMaxRefreshPerRun() {
+    return clampNumber(this.settings.maintenanceMaxRefreshPerRun, 1, 100, 6);
+  }
+
+  #getMaintenanceRefreshReason(account: PoolAccount): MaintenanceRefreshReason | null {
+    if (!primaryToken(account)) return "missing_session";
+    if (
+      account.status === "expired" ||
+      account.status === "invalid" ||
+      effectiveValidationStatus(account) === "invalid"
+    ) {
+      return "invalid_session";
+    }
+    if (this.#isSessionExpiring(account, this.#maintenanceRefreshBufferMinutes())) {
+      return "expiring_session";
+    }
+    return null;
   }
 
   getActiveLeaseCount(accountId: string) {
@@ -1920,26 +1970,74 @@ export default class AccountPoolService {
     this.maintenanceRunning = true;
     try {
       this.#releaseExpiredBlacklistedAccounts();
-      const accounts = this.store
+      const refreshLimit = this.#maintenanceMaxRefreshPerRun();
+      const candidates = this.store
         .read((state) =>
-          state.accounts.filter((item) => item.enabled && item.autoRefresh && !item.blacklisted),
-        );
-      for (const account of accounts) {
-        const materialized = this.#materializeAccount(account);
-        if (!materialized.password) continue;
-        if (this.getActiveLeaseCount(account.id) > 0) continue;
-        const shouldRefresh =
-          !primaryToken(materialized) ||
-          materialized.status === "expired" ||
-          materialized.status === "invalid" ||
-          effectiveValidationStatus(materialized) === "invalid" ||
-          this.#isSessionExpiring(materialized);
-        if (!shouldRefresh) continue;
+          state.accounts
+            .filter((item) => item.enabled && item.autoRefresh && !item.blacklisted)
+            .map((item) => this.#materializeAccount(item))
+            .filter((item) => Boolean(item.password))
+            .filter((item) => this.getActiveLeaseCount(item.id) === 0)
+            .map((item) => ({
+              account: item,
+              reason: this.#getMaintenanceRefreshReason(item),
+              sessionExpiresAtMs: parseIsoMs(item.sessionExpiresAt),
+              lastLoginAtMs: parseIsoMs(item.lastLoginAt),
+              updatedAtMs: parseIsoMs(item.updatedAt),
+            }))
+            .filter(
+              (
+                item
+              ): item is {
+                account: PoolAccount;
+                reason: MaintenanceRefreshReason;
+                sessionExpiresAtMs: number | null;
+                lastLoginAtMs: number | null;
+                updatedAtMs: number | null;
+              } => item.reason !== null
+            )
+            .sort((a, b) => {
+              const priorityDiff =
+                maintenanceRefreshPriority(a.reason) - maintenanceRefreshPriority(b.reason);
+              if (priorityDiff !== 0) return priorityDiff;
+              const expiresDiff =
+                (a.sessionExpiresAtMs ?? Number.MIN_SAFE_INTEGER) -
+                (b.sessionExpiresAtMs ?? Number.MIN_SAFE_INTEGER);
+              if (expiresDiff !== 0) return expiresDiff;
+              const loginDiff =
+                (a.lastLoginAtMs ?? Number.MIN_SAFE_INTEGER) -
+                (b.lastLoginAtMs ?? Number.MIN_SAFE_INTEGER);
+              if (loginDiff !== 0) return loginDiff;
+              const updatedDiff =
+                (a.updatedAtMs ?? Number.MIN_SAFE_INTEGER) -
+                (b.updatedAtMs ?? Number.MIN_SAFE_INTEGER);
+              if (updatedDiff !== 0) return updatedDiff;
+              return a.account.email.localeCompare(b.account.email);
+            }),
+        )
+        .slice(0, refreshLimit);
 
+      if (!candidates.length) return;
+
+      const totalPending = this.store.read((state) =>
+        state.accounts
+          .filter((item) => item.enabled && item.autoRefresh && !item.blacklisted)
+          .map((item) => this.#materializeAccount(item))
+          .filter((item) => Boolean(item.password))
+          .filter((item) => this.getActiveLeaseCount(item.id) === 0)
+          .filter((item) => this.#getMaintenanceRefreshReason(item) !== null).length
+      );
+      if (totalPending > candidates.length) {
+        logger.info(
+          `维护任务待刷新账号 ${totalPending} 个，本轮限流处理 ${candidates.length} 个，剩余 ${totalPending - candidates.length} 个留待后续轮次`
+        );
+      }
+
+      for (const candidate of candidates) {
         try {
-          await this.refreshAccountSession(account.id, "maintenance");
+          await this.refreshAccountSession(candidate.account.id, "maintenance");
         } catch (error: any) {
-          logger.warn(`维护任务刷新账号 ${account.email} 失败: ${error?.message || error}`);
+          logger.warn(`维护任务刷新账号 ${candidate.account.email} 失败: ${error?.message || error}`);
         }
       }
     } finally {

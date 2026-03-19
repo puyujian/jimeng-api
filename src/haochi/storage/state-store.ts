@@ -11,19 +11,32 @@ function hasExplicitEnv(name: string) {
 }
 
 function defaultSettings(): HaochiSettings {
+  const sessionRefreshBufferMinutes = clampNumber(
+    process.env.HAOCHI_SESSION_REFRESH_BUFFER_MINUTES,
+    5,
+    12 * 60,
+    30,
+  );
   return {
     sessionTtlMinutes: clampNumber(process.env.HAOCHI_SESSION_TTL_MINUTES, 30, 24 * 60, 360),
-    sessionRefreshBufferMinutes: clampNumber(
-      process.env.HAOCHI_SESSION_REFRESH_BUFFER_MINUTES,
-      5,
-      12 * 60,
-      30,
-    ),
+    sessionRefreshBufferMinutes,
     maintenanceIntervalSeconds: clampNumber(
       process.env.HAOCHI_MAINTENANCE_INTERVAL_SECONDS,
       15,
       3600,
       180,
+    ),
+    maintenanceRefreshBufferMinutes: clampNumber(
+      process.env.HAOCHI_MAINTENANCE_REFRESH_BUFFER_MINUTES,
+      1,
+      12 * 60,
+      Math.min(10, sessionRefreshBufferMinutes),
+    ),
+    maintenanceMaxRefreshPerRun: clampNumber(
+      process.env.HAOCHI_MAINTENANCE_MAX_REFRESH_PER_RUN,
+      1,
+      100,
+      6,
     ),
     defaultAccountMaxConcurrency: clampNumber(
       process.env.HAOCHI_ACCOUNT_MAX_CONCURRENCY,
@@ -57,6 +70,22 @@ function explicitEnvSettings(): Partial<HaochiSettings> {
       15,
       3600,
       180,
+    );
+  }
+  if (hasExplicitEnv("HAOCHI_MAINTENANCE_REFRESH_BUFFER_MINUTES")) {
+    overrides.maintenanceRefreshBufferMinutes = clampNumber(
+      process.env.HAOCHI_MAINTENANCE_REFRESH_BUFFER_MINUTES,
+      1,
+      12 * 60,
+      10,
+    );
+  }
+  if (hasExplicitEnv("HAOCHI_MAINTENANCE_MAX_REFRESH_PER_RUN")) {
+    overrides.maintenanceMaxRefreshPerRun = clampNumber(
+      process.env.HAOCHI_MAINTENANCE_MAX_REFRESH_PER_RUN,
+      1,
+      100,
+      6,
     );
   }
   if (hasExplicitEnv("HAOCHI_ACCOUNT_MAX_CONCURRENCY")) {

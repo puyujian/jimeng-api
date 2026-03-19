@@ -199,6 +199,97 @@ test("号池维护任务会在次日自动解除积分黑名单", async (t) => {
   assert.equal(releasedAccount?.status, "healthy");
 });
 
+test("号池维护任务会限制单轮刷新数量并优先处理真正失效账号", async (t) => {
+  const { tempDir, store } = createTempStore("rotation-maintenance-batch-limit");
+  const service = new AccountPoolService(store, createMockProvider());
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  store.update((state) => {
+    state.settings.maintenanceMaxRefreshPerRun = 2;
+    state.settings.maintenanceRefreshBufferMinutes = 5;
+  });
+
+  const missingSession = service.createAccount({
+    email: "maintenance-missing@example.com",
+    password: "p1",
+    autoRefresh: true,
+  });
+  const invalidSession = service.createAccount({
+    email: "maintenance-invalid-priority@example.com",
+    password: "p2",
+    sessionId: "bad-session-priority",
+    autoRefresh: true,
+  });
+  const expiringA = service.createAccount({
+    email: "maintenance-expiring-a@example.com",
+    password: "p3",
+    sessionId: "mock-session-expiring-a",
+    autoRefresh: true,
+  });
+  const expiringB = service.createAccount({
+    email: "maintenance-expiring-b@example.com",
+    password: "p4",
+    sessionId: "mock-session-expiring-b",
+    autoRefresh: true,
+  });
+
+  await service.validateAccountSession(invalidSession.id);
+  const soon = new Date(Date.now() + 2 * 60_000).toISOString();
+  store.update((state) => {
+    for (const account of state.accounts) {
+      if (account.id === expiringA.id || account.id === expiringB.id) {
+        account.sessionExpiresAt = soon;
+        account.lastValidationStatus = "valid";
+        account.status = "healthy";
+      }
+    }
+  });
+
+  await service.runMaintenance();
+
+  const accounts = service.listAccounts();
+  assert.equal(accounts.find((item) => item.id === missingSession.id)?.status, "healthy");
+  assert.equal(accounts.find((item) => item.id === invalidSession.id)?.status, "healthy");
+  assert.equal(accounts.find((item) => item.id === expiringA.id)?.lastLoginAt, null);
+  assert.equal(accounts.find((item) => item.id === expiringB.id)?.lastLoginAt, null);
+});
+
+test("号池维护任务对健康账号使用更小的预刷新窗口，避免过早批量登录", async (t) => {
+  const { tempDir, store } = createTempStore("rotation-maintenance-buffer");
+  const service = new AccountPoolService(store, createMockProvider());
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  store.update((state) => {
+    state.settings.sessionRefreshBufferMinutes = 30;
+    state.settings.maintenanceRefreshBufferMinutes = 5;
+    state.settings.maintenanceMaxRefreshPerRun = 5;
+  });
+
+  const account = service.createAccount({
+    email: "maintenance-buffer@example.com",
+    password: "p1",
+    sessionId: "mock-session-maintenance-buffer",
+    autoRefresh: true,
+  });
+
+  const beforeRun = service.listAccounts().find((item) => item.id === account.id);
+  assert.equal(beforeRun?.lastLoginAt, null);
+
+  store.update((state) => {
+    const target = state.accounts.find((item) => item.id === account.id);
+    if (!target) return;
+    target.sessionExpiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
+    target.lastValidationStatus = "valid";
+    target.status = "healthy";
+  });
+
+  await service.runMaintenance();
+
+  const afterRun = service.listAccounts().find((item) => item.id === account.id);
+  assert.equal(afterRun?.lastLoginAt, null);
+  assert.equal(afterRun?.status, "healthy");
+});
+
 test("号池启动时会把历史遗留 refreshing 状态恢复成稳态", async (t) => {
   const { tempDir, store } = createTempStore("rotation-recover-refreshing-on-start");
   const service = new AccountPoolService(store, createMockProvider());
