@@ -16,7 +16,7 @@ const state = {
   outboundExpandedKeys: new Set(),
 };
 
-const OUTBOUND_LOG_AUTO_REFRESH_MS = 3000;
+const OUTBOUND_LOG_AUTO_REFRESH_MS = 15000;
 let outboundLogRefreshTimer = null;
 let outboundLogRefreshPromise = null;
 

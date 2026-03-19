@@ -433,7 +433,7 @@ export default class AccountPoolService {
   }
 
   get settings(): HaochiSettings {
-    return this.store.getState().settings;
+    return this.store.read((state) => ({ ...state.settings }));
   }
 
   #resolveStoredPassword(password: PoolAccount["password"]) {
@@ -550,7 +550,7 @@ export default class AccountPoolService {
   }
 
   #resolveBatchAccountIds(payload: any) {
-    const state = this.store.getState();
+    const state = this.store.read((current) => current);
     const applyToAll = parseBoolean(payload?.applyToAll, false);
     if (applyToAll) {
       return {
@@ -583,19 +583,17 @@ export default class AccountPoolService {
   }
 
   #requireAccount(accountId: string) {
-    const account =
-      this.store
-        .getState()
-        .accounts.find((item) => item.id === accountId) || null;
+    const account = this.store.read(
+      (state) => state.accounts.find((item) => item.id === accountId) || null,
+    );
     if (!account) throw createHttpError("账号不存在", 404);
     return account;
   }
 
   #requireApiKey(apiKeyId: string) {
-    const apiKey =
-      this.store
-        .getState()
-        .apiKeys.find((item) => item.id === apiKeyId) || null;
+    const apiKey = this.store.read(
+      (state) => state.apiKeys.find((item) => item.id === apiKeyId) || null,
+    );
     if (!apiKey) throw createHttpError("API Key 不存在", 404);
     return apiKey;
   }
@@ -633,7 +631,9 @@ export default class AccountPoolService {
 
     const proxyKey = normalizedProxyKey(account.proxy);
     if (proxyKey && this.settings.maxProxyConcurrency > 0) {
-      const proxyLeaseCounts = this.#buildProxyLeaseCounts(this.store.getState().accounts);
+      const proxyLeaseCounts = this.#buildProxyLeaseCounts(
+        this.store.read((state) => state.accounts),
+      );
       if ((proxyLeaseCounts.get(proxyKey) || 0) >= this.settings.maxProxyConcurrency) {
         return null;
       }
@@ -1201,7 +1201,7 @@ export default class AccountPoolService {
   }
 
   async validateAllAccountsSessions() {
-    const candidates = this.store.getState().accounts;
+    const candidates = this.store.read((state) => state.accounts);
     const results: Array<{ id: string; email: string; valid: boolean; reason: string }> = [];
     const errors: Array<{ id: string; email: string; error: string }> = [];
 
@@ -1467,8 +1467,7 @@ export default class AccountPoolService {
     if (!rawKey) return null;
 
     const apiKey = this.store
-      .getState()
-      .apiKeys.find((item) => item.enabled && verifySecret(rawKey, item.secretHash));
+      .read((state) => state.apiKeys.find((item) => item.enabled && verifySecret(rawKey, item.secretHash)));
     if (!apiKey) return null;
 
     const storedRawKey = this.#resolveStoredApiKeyValue(apiKey.secretValue);
@@ -1598,16 +1597,18 @@ export default class AccountPoolService {
 
   #releaseExpiredBlacklistedAccounts() {
     const dueAccounts = this.store
-      .getState()
-      .accounts.filter((item) => item.blacklisted)
-      .filter((item) => {
-        const releaseAtMs = parseIsoMs(item.blacklistReleaseAt);
-        return releaseAtMs !== null && releaseAtMs <= Date.now();
-      })
-      .map((item) => ({
-        id: item.id,
-        email: item.email,
-      }));
+      .read((state) =>
+        state.accounts
+          .filter((item) => item.blacklisted)
+          .filter((item) => {
+            const releaseAtMs = parseIsoMs(item.blacklistReleaseAt);
+            return releaseAtMs !== null && releaseAtMs <= Date.now();
+          })
+          .map((item) => ({
+            id: item.id,
+            email: item.email,
+          })),
+      );
 
     if (!dueAccounts.length) return [];
 
@@ -1718,7 +1719,7 @@ export default class AccountPoolService {
 
   async #selectManagedAccount(ability: PoolAbility, excludedIds: Set<string>) {
     this.#releaseExpiredBlacklistedAccounts();
-    const state = this.store.getState();
+    const state = this.store.read((current) => current);
     const proxyLeaseCounts = this.#buildProxyLeaseCounts(state.accounts);
     const candidates = state.accounts
       .filter((item) => item.enabled && !item.blacklisted && !excludedIds.has(item.id))
@@ -1790,8 +1791,7 @@ export default class AccountPoolService {
     const triedIds = new Set<string>();
     let lastError: any = null;
     const candidateCount = this.store
-      .getState()
-      .accounts.filter((item) => item.enabled && !item.blacklisted).length;
+      .read((state) => state.accounts.filter((item) => item.enabled && !item.blacklisted).length);
     const maxAttempts = Math.max(1, this.settings.maxRequestRetries, candidateCount);
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -1853,8 +1853,9 @@ export default class AccountPoolService {
     try {
       this.#releaseExpiredBlacklistedAccounts();
       const accounts = this.store
-        .getState()
-        .accounts.filter((item) => item.enabled && item.autoRefresh && !item.blacklisted);
+        .read((state) =>
+          state.accounts.filter((item) => item.enabled && item.autoRefresh && !item.blacklisted),
+        );
       for (const account of accounts) {
         const materialized = this.#materializeAccount(account);
         if (!materialized.password) continue;

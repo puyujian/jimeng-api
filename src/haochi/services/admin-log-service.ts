@@ -8,6 +8,11 @@ import util from "@/lib/util.ts";
 const OUTBOUND_MARKER = "[OUTBOUND]";
 const DEFAULT_LIMIT = 120;
 const MAX_LIMIT = 400;
+const OUTBOUND_LOG_TAIL_BYTES = Math.max(
+  128 * 1024,
+  Number(process.env.JIMENG_ADMIN_OUTBOUND_LOG_TAIL_BYTES || 2 * 1024 * 1024) ||
+    2 * 1024 * 1024,
+);
 
 type OutboundEntryStatus = "pending" | "success" | "error";
 
@@ -72,6 +77,32 @@ function normalizeLimit(value?: number) {
   const limit = Number(value || DEFAULT_LIMIT);
   if (!Number.isFinite(limit) || limit <= 0) return DEFAULT_LIMIT;
   return Math.min(MAX_LIMIT, Math.max(1, Math.floor(limit)));
+}
+
+function readRecentLogText(filePath: string) {
+  const stat = fs.statSync(filePath);
+  if (stat.size <= OUTBOUND_LOG_TAIL_BYTES) {
+    return {
+      stat,
+      content: fs.readFileSync(filePath, "utf8"),
+    };
+  }
+
+  const start = Math.max(0, stat.size - OUTBOUND_LOG_TAIL_BYTES);
+  const length = stat.size - start;
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    fs.readSync(fd, buffer, 0, length, start);
+    const content = buffer.toString("utf8");
+    const firstNewLineIndex = content.indexOf("\n");
+    return {
+      stat,
+      content: firstNewLineIndex >= 0 ? content.slice(firstNewLineIndex + 1) : content,
+    };
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 function parseLogLine(raw: string): ParsedLogLine {
@@ -447,8 +478,7 @@ export default class AdminLogService {
       };
     }
 
-    const stat = fs.statSync(filePath);
-    const content = fs.readFileSync(filePath, "utf8");
+    const { stat, content } = readRecentLogText(filePath);
     const entries = buildEntries(
       content
         .split(/\r?\n/)

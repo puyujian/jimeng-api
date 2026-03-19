@@ -7,6 +7,7 @@ const REGISTER_FLAG = "__jimengApiOutboundLoggerRegistered__";
 const MAX_STRING_LENGTH = 400;
 const MAX_ARRAY_ITEMS = 8;
 const MAX_OBJECT_KEYS = 12;
+const VERBOSE_OUTBOUND_LOGS = process.env.JIMENG_VERBOSE_OUTBOUND_LOGS === "1";
 let requestSequence = 0;
 let requestGroupSequence = 0;
 
@@ -450,6 +451,10 @@ function logRequest(config: any) {
   logger.info(`[OUTBOUND][${meta.requestId}] -> ${meta.method} ${meta.url}`);
   logger.info(`[OUTBOUND][${meta.requestId}] start=${toLogString(buildStartSummary(meta, config))}`);
 
+  if (!VERBOSE_OUTBOUND_LOGS) {
+    return config;
+  }
+
   const headers = summarizeHeaders(config.headers);
   if (headers && Object.keys(headers).length > 0) {
     logger.info(
@@ -486,6 +491,10 @@ function logResponse(response: any) {
     `[OUTBOUND][${meta.requestId}] end=${toLogString(buildEndSummary(meta, response, duration))}`,
   );
 
+  if (!VERBOSE_OUTBOUND_LOGS) {
+    return response;
+  }
+
   if (typeof response.data !== "undefined") {
     logFn(
       `[OUTBOUND][${meta.requestId}] response=${toLogString(summarizeValue(response.data, 0, "response"))}`,
@@ -505,6 +514,10 @@ function logError(error: any) {
   logger.error(
     `[OUTBOUND][${meta.requestId}] end=${toLogString(buildErrorSummary(meta, error, duration))}`,
   );
+
+  if (!VERBOSE_OUTBOUND_LOGS) {
+    return Promise.reject(error);
+  }
 
   if (error?.response) {
     logger.error(

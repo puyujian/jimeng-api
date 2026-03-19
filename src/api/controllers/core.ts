@@ -34,6 +34,7 @@ import {
 
 // 模型名称
 const MODEL_NAME = "jimeng";
+const VERBOSE_REQUEST_LOGS = process.env.JIMENG_VERBOSE_REQUEST_LOGS === "1";
 // 设备ID
 const DEVICE_ID = Math.random() * 999999999999999999 + 7000000000000000000;
 // WebID
@@ -90,6 +91,11 @@ export interface RegionInfo {
 export interface TokenWithProxy {
   token: string;
   proxyUrl: string | null;
+}
+
+interface RequestOptions extends AxiosRequestConfig {
+  noDefaultParams?: boolean;
+  __outboundLogMeta?: Record<string, any>;
 }
 
 export function parseProxyFromToken(rawToken: string): TokenWithProxy {
@@ -248,7 +254,7 @@ export async function request(
   method: string,
   uri: string,
   refreshToken: string,
-  options: AxiosRequestConfig & { noDefaultParams?: boolean } = {}
+  options: RequestOptions = {}
 ) {
   const { token: tokenWithRegion, proxyUrl } = parseProxyFromToken(refreshToken);
   const regionInfo = parseRegionFromToken(tokenWithRegion);
@@ -327,13 +333,15 @@ export async function request(
     ...(options.headers || {}),
   };
 
-  logger.info(`发送请求: ${method.toUpperCase()} ${fullUrl}`);
-  if (proxyUrl) {
-    const maskedProxyUrl = proxyUrl.replace(/\/\/([^@/]+)@/i, "//***@");
-    logger.info(`使用代理: ${maskedProxyUrl}`);
+  if (VERBOSE_REQUEST_LOGS) {
+    logger.info(`发送请求: ${method.toUpperCase()} ${fullUrl}`);
+    if (proxyUrl) {
+      const maskedProxyUrl = proxyUrl.replace(/\/\/([^@/]+)@/i, "//***@");
+      logger.info(`使用代理: ${maskedProxyUrl}`);
+    }
+    logger.info(`请求参数: ${JSON.stringify(requestParams)}`);
+    logger.info(`请求数据: ${JSON.stringify(options.data || {})}`);
   }
-  logger.info(`请求参数: ${JSON.stringify(requestParams)}`);
-  logger.info(`请求数据: ${JSON.stringify(options.data || {})}`);
 
   // 添加重试逻辑
   let retries = 0;
@@ -361,7 +369,7 @@ export async function request(
           : new HttpsProxyAgent(currentProxyUrl))
         : undefined;
 
-      const response = await axios.request({
+      const requestConfig: RequestOptions = {
         method,
         url: fullUrl,
         params: requestParams,
@@ -380,19 +388,20 @@ export async function request(
         },
         ..._.omit(options, "params", "headers", "noDefaultParams", "__outboundLogMeta"),
         ...(proxyAgent ? { httpAgent: proxyAgent, httpsAgent: proxyAgent, proxy: false } : {}),
-      });
-
-      // 记录响应状态和头信息
-      logger.info(`响应状态: ${response.status} ${response.statusText}`);
+      };
+      const response = await axios.request(requestConfig);
 
       // 流式响应直接返回response
       if (options.responseType == "stream") return response;
 
-      // 记录响应数据摘要
-      const responseDataSummary = JSON.stringify(response.data).substring(0, 500) +
-        (JSON.stringify(response.data).length > 500 ? "..." : "");
-      //const responseDataSummary = JSON.stringify(response.data)
-      logger.info(`响应数据摘要: ${responseDataSummary}`);
+      if (VERBOSE_REQUEST_LOGS) {
+        logger.info(`响应状态: ${response.status} ${response.statusText}`);
+        const serializedResponseData = JSON.stringify(response.data);
+        const responseDataSummary =
+          serializedResponseData.substring(0, 500) +
+          (serializedResponseData.length > 500 ? "..." : "");
+        logger.info(`响应数据摘要: ${responseDataSummary}`);
+      }
 
       // 检查HTTP状态码
       if (response.status >= 400) {

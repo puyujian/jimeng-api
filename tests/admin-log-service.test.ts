@@ -90,3 +90,41 @@ test("AdminLogService 会按任务聚合外呼日志，并保留失败原因和�
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("AdminLogService 只读取日志尾部时仍能返回最新任务日志", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "outbound-log-tail-"));
+  const originalLogDir = config.system.logDir;
+  const date = "2026-03-19";
+  const logFile = path.join(tempDir, `${date}.log`);
+
+  try {
+    config.system.logDir = tempDir;
+    const noisyPrefix = Array.from({ length: 18_000 }, (_, index) =>
+      `[2026-03-19 10:00:${String(index % 60).padStart(2, "0")}.000][info][noise.ts<1,1>] regular line ${index} ${"x".repeat(120)}`
+    ).join("\n");
+    const recentOutbound = [
+      '[2026-03-19 11:00:00.000][info][outbound-request-log.ts<1,1>] [OUTBOUND][req_tail_submit] -> POST https://mweb-api-sg.capcut.com/mweb/v1/aigc_draft/generate',
+      '[2026-03-19 11:00:00.001][info][outbound-request-log.ts<1,1>] [OUTBOUND][req_tail_submit] start={"groupId":"grp_tail_submit","accountLabel":"tail@example.com","ability":"images","requestMode":"pool","requestKind":"提交任务","historyId":"hist_tail","attempt":0,"attemptLabel":"首次请求","generationStatus":"生成中"}',
+      '[2026-03-19 11:00:01.500][info][outbound-request-log.ts<1,1>] [OUTBOUND][req_tail_submit] <- POST https://mweb-api-sg.capcut.com/mweb/v1/aigc_draft/generate 200 OK 1499ms',
+      '[2026-03-19 11:00:01.501][info][outbound-request-log.ts<1,1>] [OUTBOUND][req_tail_submit] end={"groupId":"grp_tail_submit","accountLabel":"tail@example.com","ability":"images","requestMode":"pool","requestKind":"提交任务","historyId":"hist_tail","attempt":0,"attemptLabel":"首次请求","durationMs":1499,"httpStatus":200,"httpStatusText":"OK","resultStatus":"success","generationStatus":"生成中"}',
+      '[2026-03-19 11:00:05.000][info][outbound-request-log.ts<1,1>] [OUTBOUND][req_tail_poll] -> POST https://mweb-api-sg.capcut.com/mweb/v1/get_history_by_ids',
+      '[2026-03-19 11:00:05.001][info][outbound-request-log.ts<1,1>] [OUTBOUND][req_tail_poll] start={"groupId":"grp_tail_poll","accountLabel":"tail@example.com","ability":"images","requestMode":"pool","requestKind":"轮询状态","historyId":"hist_tail","attempt":0,"attemptLabel":"首次请求","generationStatus":"生成中"}',
+      '[2026-03-19 11:00:05.900][info][outbound-request-log.ts<1,1>] [OUTBOUND][req_tail_poll] <- POST https://mweb-api-sg.capcut.com/mweb/v1/get_history_by_ids 200 OK 899ms',
+      '[2026-03-19 11:00:05.901][info][outbound-request-log.ts<1,1>] [OUTBOUND][req_tail_poll] end={"groupId":"grp_tail_poll","accountLabel":"tail@example.com","ability":"images","requestMode":"pool","requestKind":"轮询状态","historyId":"hist_tail","attempt":0,"attemptLabel":"首次请求","durationMs":899,"httpStatus":200,"httpStatusText":"OK","resultStatus":"success","generationStatus":"生成完成","generationStatusCode":50}',
+    ].join("\n");
+
+    fs.writeFileSync(logFile, `${noisyPrefix}\n${recentOutbound}`, "utf8");
+
+    const service = new AdminLogService();
+    const payload = service.getOutboundLogs({ date, limit: 5 });
+
+    assert.equal(payload.available, true);
+    assert.equal(payload.totalMatched, 1);
+    assert.equal(payload.entries[0]?.taskKey, "history:hist_tail");
+    assert.deepEqual(payload.entries[0]?.requestIds, ["req_tail_submit", "req_tail_poll"]);
+    assert.equal(payload.entries[0]?.generationStatus, "生成完成");
+  } finally {
+    config.system.logDir = originalLogDir;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});

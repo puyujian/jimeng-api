@@ -66,7 +66,7 @@ export default class AdminAuthService {
       lastLoginAt: null,
       needsPasswordChange: !process.env.HAOCHI_ADMIN_PASSWORD,
     });
-    this.store.saveState(state);
+    this.store.saveState(state, { immediate: true });
 
     if (!process.env.HAOCHI_ADMIN_PASSWORD) {
       logger.warn(
@@ -80,15 +80,11 @@ export default class AdminAuthService {
 
   #getAdminByUsername(username: string) {
     const normalized = String(username || "").trim();
-    return this.store
-      .getState()
-      .admins.find((item) => item.username === normalized) || null;
+    return this.store.read((state) => state.admins.find((item) => item.username === normalized) || null);
   }
 
   #getAdminById(userId: string) {
-    return this.store
-      .getState()
-      .admins.find((item) => item.id === userId) || null;
+    return this.store.read((state) => state.admins.find((item) => item.id === userId) || null);
   }
 
   #createSession(admin: AdminUser) {
@@ -135,7 +131,7 @@ export default class AdminAuthService {
       if (!current) return;
       current.lastLoginAt = nowIso();
       current.updatedAt = nowIso();
-    });
+    }, { immediate: true });
     return {
       session,
       user: toPublicUser(this.#getAdminById(admin.id) || admin),
@@ -198,7 +194,7 @@ export default class AdminAuthService {
       target.passwordHash = createSecretHash(nextPassword);
       target.updatedAt = nowIso();
       target.needsPasswordChange = false;
-    });
+    }, { immediate: true });
 
     return {
       user: toPublicUser(this.#getAdminById(userId) || admin),

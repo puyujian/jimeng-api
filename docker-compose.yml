@@ -10,15 +10,23 @@ services:
       - "5100:5100"
     environment:
       SERVER_PORT: 5100
+      NODE_OPTIONS: --max-old-space-size=768
       HAOCHI_STATE_PATH: /app/data/haochi/state.json
       HAOCHI_LOGIN_PROVIDER: dreamina
       HAOCHI_LOGIN_HEADLESS: 1
-      # 单代理部署建议先从 1~2 开始，避免同一出口同时堆太多生图任务
-      # HAOCHI_PROXY_MAX_CONCURRENCY: 2
+      HAOCHI_MAINTENANCE_INTERVAL_SECONDS: 600
+      HAOCHI_STATE_FLUSH_INTERVAL_MS: 1000
+      HAOCHI_PROXY_MAX_CONCURRENCY: 2
       HAOCHI_ADMIN_USERNAME: admin
       HAOCHI_ADMIN_PASSWORD: ChangeMe123!
       HAOCHI_ACCOUNT_SECRET: change-this-secret-at-least-8
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium-browser
+      JIMENG_VERBOSE_REQUEST_LOGS: 0
+      JIMENG_VERBOSE_OUTBOUND_LOGS: 0
+      JIMENG_SMART_POLLER_VERBOSE: 0
+      JIMENG_LOG_CAPTURE_SOURCE: 0
+      JIMENG_LOG_BUFFER_MAX_BYTES: 4194304
+      JIMENG_ADMIN_OUTBOUND_LOG_TAIL_BYTES: 2097152
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
