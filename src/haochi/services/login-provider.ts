@@ -42,13 +42,46 @@ function primarySessionToken(account: PoolAccount) {
   );
 }
 
-function inferRegionPrefixFromAccount(account: PoolAccount) {
+function inferRegionPrefixFromAccount(account: Pick<PoolAccount, "sessionTokens">) {
   const token = String(primarySessionToken(account) || "").trim().toLowerCase();
   if (token.startsWith("us-")) return "us-";
   if (token.startsWith("hk-")) return "hk-";
   if (token.startsWith("jp-")) return "jp-";
   if (token.startsWith("sg-")) return "sg-";
   return "";
+}
+
+function normalizeRegionPrefixValue(value: string | null | undefined) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "us" || normalized === "us-") return "us-";
+  if (normalized === "hk" || normalized === "hk-") return "hk-";
+  if (normalized === "jp" || normalized === "jp-") return "jp-";
+  if (normalized === "sg" || normalized === "sg-") return "sg-";
+  return "";
+}
+
+export function resolveRefreshedRegionPrefix(options: {
+  originalRegionPrefix?: string | null;
+  detectedRegionPrefix?: string | null;
+  forcedRegionPrefix?: string | null;
+}) {
+  const originalRegionPrefix = normalizeRegionPrefixValue(options.originalRegionPrefix);
+  const detectedRegionPrefix = normalizeRegionPrefixValue(options.detectedRegionPrefix);
+  const forcedRegionPrefix = normalizeRegionPrefixValue(options.forcedRegionPrefix);
+  return {
+    originalRegionPrefix,
+    detectedRegionPrefix,
+    forcedRegionPrefix,
+    finalRegionPrefix:
+      forcedRegionPrefix || originalRegionPrefix || detectedRegionPrefix,
+    preservedOriginal:
+      !forcedRegionPrefix &&
+      Boolean(
+        originalRegionPrefix &&
+          detectedRegionPrefix &&
+          originalRegionPrefix !== detectedRegionPrefix
+      ),
+  };
 }
 
 class MockLoginProvider implements LoginProvider {
@@ -292,15 +325,6 @@ class DreaminaLoginProvider implements LoginProvider {
       }, {});
   }
 
-  #normalizeRegionPrefix(value: string | null | undefined) {
-    const normalized = String(value || "").trim().toLowerCase();
-    if (normalized === "us" || normalized === "us-") return "us-";
-    if (normalized === "hk" || normalized === "hk-") return "hk-";
-    if (normalized === "jp" || normalized === "jp-") return "jp-";
-    if (normalized === "sg" || normalized === "sg-") return "sg-";
-    return "";
-  }
-
   #prefixSessionToken(token: string | null | undefined, regionPrefix: string) {
     const raw = String(token || "").trim();
     if (!raw) return null;
@@ -310,7 +334,9 @@ class DreaminaLoginProvider implements LoginProvider {
   }
 
   async #detectRegionPrefix(page: any) {
-    const envPrefix = this.#normalizeRegionPrefix(process.env.HAOCHI_LOGIN_REGION_PREFIX);
+    const envPrefix = normalizeRegionPrefixValue(
+      process.env.HAOCHI_LOGIN_REGION_PREFIX
+    );
     if (envPrefix) return envPrefix;
 
     for (const frame of page.frames()) {
@@ -340,7 +366,7 @@ class DreaminaLoginProvider implements LoginProvider {
           return "";
         });
 
-        const prefix = this.#normalizeRegionPrefix(regionCode);
+        const prefix = normalizeRegionPrefixValue(regionCode);
         if (prefix) return prefix;
       } catch {
         // ignore
@@ -910,9 +936,22 @@ class DreaminaLoginProvider implements LoginProvider {
         throw new Error("登录未获取到 sessionid，可能触发验证码、二次确认或账号密码错误");
       }
 
-      const regionPrefix = await this.#detectRegionPrefix(page);
-      if (regionPrefix) {
-        push(`识别 Dreamina 区域前缀: ${regionPrefix}`);
+      const originalRegionPrefix = inferRegionPrefixFromAccount(account);
+      const detectedRegionPrefix = await this.#detectRegionPrefix(page);
+      const resolvedRegion = resolveRefreshedRegionPrefix({
+        originalRegionPrefix,
+        detectedRegionPrefix,
+        forcedRegionPrefix: process.env.HAOCHI_LOGIN_REGION_PREFIX,
+      });
+      if (resolvedRegion.forcedRegionPrefix) {
+        push(`使用环境变量强制区域前缀: ${resolvedRegion.finalRegionPrefix}`);
+      } else if (resolvedRegion.preservedOriginal) {
+        logger.warn(
+          `[号池登录] ${account.email}: 页面检测到区域 ${resolvedRegion.detectedRegionPrefix}，但账号原区域为 ${resolvedRegion.originalRegionPrefix}，自动刷新将保留原账号区域`
+        );
+        push(`保留原账号区域前缀: ${resolvedRegion.originalRegionPrefix}`);
+      } else if (resolvedRegion.finalRegionPrefix) {
+        push(`识别 Dreamina 区域前缀: ${resolvedRegion.finalRegionPrefix}`);
       } else {
         logger.warn(`[号池登录] ${account.email}: 未识别到 Dreamina 区域前缀，将保留原始 sessionid`);
       }
@@ -951,9 +990,18 @@ class DreaminaLoginProvider implements LoginProvider {
         userInfo,
         sessionTokens: {
           ...emptySessionTokens(),
-          sessionid: this.#prefixSessionToken(cookies.sessionid, regionPrefix),
-          sessionid_ss: this.#prefixSessionToken(cookies.sessionid_ss, regionPrefix),
-          sid_tt: this.#prefixSessionToken(cookies.sid_tt, regionPrefix),
+          sessionid: this.#prefixSessionToken(
+            cookies.sessionid,
+            resolvedRegion.finalRegionPrefix
+          ),
+          sessionid_ss: this.#prefixSessionToken(
+            cookies.sessionid_ss,
+            resolvedRegion.finalRegionPrefix
+          ),
+          sid_tt: this.#prefixSessionToken(
+            cookies.sid_tt,
+            resolvedRegion.finalRegionPrefix
+          ),
           msToken: cookies.msToken || null,
           passport_csrf_token: cookies.passport_csrf_token || null,
           passport_csrf_token_default: cookies.passport_csrf_token_default || null,
