@@ -396,6 +396,21 @@ function accountFailurePenalty(account: Pick<PoolAccount, "successCount" | "fail
   return failureRatePenalty + excessFailurePenalty + recentErrorPenalty;
 }
 
+function isOverviewBlacklisted(account: Pick<PoolAccount, "status" | "blacklisted">) {
+  return account.blacklisted || account.status === "blacklisted" || account.status === "insufficient_credit";
+}
+
+function createInvalidBreakdown() {
+  return {
+    idle: 0,
+    refreshing: 0,
+    expired: 0,
+    invalid: 0,
+    disabled: 0,
+    error: 0,
+  };
+}
+
 type AccountListStatusFilter = "all" | "healthy" | "invalid" | "blacklisted";
 
 function normalizeAccountListStatusFilter(value: any): AccountListStatusFilter {
@@ -870,11 +885,28 @@ export default class AccountPoolService {
 
   getOverview() {
     const state = this.store.getState();
-    const healthy = state.accounts.filter((item) => item.status === "healthy" && !item.blacklisted).length;
-    const blacklisted = state.accounts.filter((item) => item.blacklisted).length;
     const withSession = state.accounts.filter((item) => !!primaryToken(item)).length;
     const activeLeases = Array.from(this.leaseMap.values()).reduce((sum, item) => sum + item.size, 0);
     const totalCapacity = state.accounts.reduce((sum, item) => sum + Number(item.maxConcurrency || 0), 0);
+    const invalidBreakdown = createInvalidBreakdown();
+    let healthy = 0;
+    let invalid = 0;
+    let blacklisted = 0;
+
+    for (const account of state.accounts) {
+      if (isOverviewBlacklisted(account)) {
+        blacklisted += 1;
+        continue;
+      }
+      if (account.status === "healthy") {
+        healthy += 1;
+        continue;
+      }
+      invalid += 1;
+      if (Object.hasOwn(invalidBreakdown, account.status)) {
+        invalidBreakdown[account.status as keyof typeof invalidBreakdown] += 1;
+      }
+    }
 
     return {
       settings: state.settings,
@@ -883,10 +915,12 @@ export default class AccountPoolService {
         accounts: state.accounts.length,
         apiKeys: state.apiKeys.length,
         healthy,
+        invalid,
         blacklisted,
         withSession,
         activeLeases,
         totalCapacity,
+        invalidBreakdown,
       },
       apiKeys: this.listApiKeys(),
     };
@@ -1821,6 +1855,8 @@ export default class AccountPoolService {
       let validCount = 0;
       let invalidCount = 0;
       let failedCount = 0;
+      let refreshedCount = 0;
+      let refreshFailedCount = 0;
 
       for (const candidate of candidates) {
         try {
@@ -1829,6 +1865,15 @@ export default class AccountPoolService {
             validCount += 1;
           } else {
             invalidCount += 1;
+            if (result.account?.autoRefresh && result.account?.hasPassword) {
+              try {
+                await this.refreshAccountSession(candidate.id, "maintenance-invalid");
+                refreshedCount += 1;
+              } catch (refreshError: any) {
+                refreshFailedCount += 1;
+                logger.warn(`维护任务刷新失效账号 ${candidate.email} 失败: ${refreshError?.message || refreshError}`);
+              }
+            }
           }
         } catch (error: any) {
           failedCount += 1;
@@ -1837,7 +1882,7 @@ export default class AccountPoolService {
       }
 
       logger.info(
-        `维护任务 Session 检测完成: 总计 ${candidates.length} 个, 有效 ${validCount} 个, 失效 ${invalidCount} 个, 失败 ${failedCount} 个`
+        `维护任务 Session 检测完成: 总计 ${candidates.length} 个, 有效 ${validCount} 个, 失效 ${invalidCount} 个, 已刷新 ${refreshedCount} 个, 刷新失败 ${refreshFailedCount} 个, 校验失败 ${failedCount} 个`
       );
     } finally {
       this.maintenanceRunning = false;

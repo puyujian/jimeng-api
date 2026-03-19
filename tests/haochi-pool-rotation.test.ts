@@ -156,7 +156,7 @@ test("号池在触发当日生成额度上限时自动切换并临时拉黑账�
   assert.match(failedAccount?.lastError || "", /121101|daily generation limit/i);
 });
 
-test("号池维护任务会每日检测已有 Session 的账号，但不会自动刷新已失效账号", async (t) => {
+test("号池维护任务会每日检测已有 Session 的账号，并自动刷新可恢复的失效账号", async (t) => {
   const { tempDir, store } = createTempStore("rotation-maintenance-daily-check");
   const service = new AccountPoolService(store, createMockProvider());
   t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
@@ -178,9 +178,9 @@ test("号池维护任务会每日检测已有 Session 的账号，但不会自�
 
   const invalidAfter = service.listAccounts().find((item) => item.id === invalidAccount.id);
   const healthyAfter = service.listAccounts().find((item) => item.id === healthyAccount.id);
-  assert.equal(invalidAfter?.status, "expired");
-  assert.equal(invalidAfter?.lastValidationStatus, "invalid");
-  assert.equal(invalidAfter?.lastLoginAt, null);
+  assert.equal(invalidAfter?.status, "healthy");
+  assert.equal(invalidAfter?.lastValidationStatus, "valid");
+  assert.ok(invalidAfter?.lastLoginAt);
   assert.equal(healthyAfter?.status, "healthy");
   assert.equal(healthyAfter?.lastValidationStatus, "valid");
   assert.equal(healthyAfter?.lastLoginAt, null);
@@ -245,6 +245,80 @@ test("号池维护任务会跳过没有 Session 的账号，保留 idle 状态",
   assert.equal(healthyAfter?.status, "healthy");
   assert.equal(healthyAfter?.lastValidationStatus, "valid");
   assert.ok(healthyAfter?.lastValidatedAt);
+});
+
+test("总览统计会把所有异常状态归到失效中，并单独统计拉黑账号", (t) => {
+  const { tempDir, store } = createTempStore("rotation-overview-invalid-buckets");
+  const service = new AccountPoolService(store, createMockProvider());
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  const healthy = service.createAccount({
+    email: "overview-healthy@example.com",
+    password: "p1",
+    sessionId: "mock-session-overview-healthy",
+  });
+  const idle = service.createAccount({
+    email: "overview-idle@example.com",
+    password: "p2",
+  });
+  const disabled = service.createAccount({
+    email: "overview-disabled@example.com",
+    password: "p3",
+    enabled: false,
+  });
+  const expired = service.createAccount({
+    email: "overview-expired@example.com",
+    password: "p4",
+    sessionId: "mock-session-overview-expired",
+  });
+  const errored = service.createAccount({
+    email: "overview-error@example.com",
+    password: "p5",
+    sessionId: "mock-session-overview-error",
+  });
+  const refreshing = service.createAccount({
+    email: "overview-refreshing@example.com",
+    password: "p6",
+    sessionId: "mock-session-overview-refreshing",
+  });
+  const blacklisted = service.createAccount({
+    email: "overview-blacklisted@example.com",
+    password: "p7",
+    sessionId: "mock-session-overview-blacklisted",
+  });
+
+  store.update((state) => {
+    const expiredTarget = state.accounts.find((item) => item.id === expired.id);
+    const errorTarget = state.accounts.find((item) => item.id === errored.id);
+    const refreshingTarget = state.accounts.find((item) => item.id === refreshing.id);
+    const blacklistedTarget = state.accounts.find((item) => item.id === blacklisted.id);
+    if (expiredTarget) expiredTarget.status = "expired";
+    if (errorTarget) errorTarget.status = "error";
+    if (refreshingTarget) refreshingTarget.status = "refreshing";
+    if (blacklistedTarget) {
+      blacklistedTarget.blacklisted = true;
+      blacklistedTarget.status = "insufficient_credit";
+      blacklistedTarget.blacklistedReason = "1006";
+    }
+  });
+
+  const overview = service.getOverview();
+
+  assert.equal(overview.counts.accounts, 7);
+  assert.equal(overview.counts.healthy, 1);
+  assert.equal(overview.counts.invalid, 5);
+  assert.equal(overview.counts.blacklisted, 1);
+  assert.equal(overview.counts.withSession, 5);
+  assert.deepEqual(overview.counts.invalidBreakdown, {
+    idle: 1,
+    refreshing: 1,
+    expired: 1,
+    invalid: 0,
+    disabled: 1,
+    error: 1,
+  });
+  assert.equal(overview.counts.healthy + overview.counts.invalid + overview.counts.blacklisted, 7);
+  assert.equal(service.listAccounts().find((item) => item.id === healthy.id)?.status, "healthy");
 });
 
 test("号池启动时会把历史遗留 refreshing 状态恢复成稳态", async (t) => {

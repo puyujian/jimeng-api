@@ -390,6 +390,12 @@ test("号池管理后台 HTTP 链路可用", { concurrency: false }, async (t) =
   assert.equal(overview.response.status, 200);
   assert.equal(overview.payload.counts.accounts, 4);
   assert.equal(overview.payload.counts.apiKeys, 1);
+  assert.equal(typeof overview.payload.counts.invalid, "number");
+  assert.equal(typeof overview.payload.counts.invalidBreakdown, "object");
+  assert.equal(
+    overview.payload.counts.healthy + overview.payload.counts.invalid + overview.payload.counts.blacklisted,
+    overview.payload.counts.accounts
+  );
   assert.equal(overview.payload.counts.totalCapacity, 15);
   assert.equal(overview.payload.apiKeys[0].rawKey, rotatedKey.payload.rawKey);
   assert.equal(overview.payload.accounts, undefined);

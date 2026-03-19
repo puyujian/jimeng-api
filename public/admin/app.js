@@ -22,12 +22,25 @@ let outboundLogRefreshPromise = null;
 
 const STATUS_LABELS = {
   healthy: "健康",
+  idle: "待恢复",
+  refreshing: "恢复中",
+  expired: "已过期",
+  disabled: "已禁用",
   blacklisted: "已拉黑",
   invalid: "已失效",
   insufficient_credit: "额度耗尽",
   error: "异常",
   valid: "有效",
   unknown: "未知",
+};
+
+const INVALID_STATUS_BREAKDOWN_LABELS = {
+  idle: "待恢复",
+  refreshing: "恢复中",
+  expired: "已过期",
+  invalid: "已失效",
+  disabled: "已禁用",
+  error: "异常",
 };
 
 const ABILITY_LABELS = {
@@ -608,10 +621,19 @@ function renderMetrics(overview, options = {}) {
   const counts = overview.counts || {};
   const accountsTotal = Number(counts.accounts || 0);
   const healthy = Number(counts.healthy || 0);
+  const invalid = Number(counts.invalid || 0);
   const withSession = Number(counts.withSession || 0);
   const blacklisted = Number(counts.blacklisted || 0);
   const activeLeases = Number(counts.activeLeases || 0);
   const totalCapacity = Number(counts.totalCapacity || 0);
+  const invalidBreakdown = counts.invalidBreakdown || {};
+  const invalidBreakdownText = Object.entries(INVALID_STATUS_BREAKDOWN_LABELS)
+    .map(([key, label]) => {
+      const count = Number(invalidBreakdown[key] || 0);
+      return count > 0 ? `${label} ${count}` : "";
+    })
+    .filter(Boolean)
+    .join(" / ");
 
   const metrics = [
     {
@@ -627,6 +649,17 @@ function renderMetrics(overview, options = {}) {
       helper: accountsTotal ? `占总账号 ${Math.round((healthy / accountsTotal) * 100)}%` : "等待接入账号",
       tone: "ok",
       progress: accountsTotal ? healthy / accountsTotal : 0,
+    },
+    {
+      label: "失效账号",
+      value: invalid,
+      helper: invalid
+        ? `${accountsTotal ? `占总账号 ${Math.round((invalid / accountsTotal) * 100)}%` : ""}${
+            invalidBreakdownText ? ` | ${invalidBreakdownText}` : ""
+          }`
+        : "当前没有失效账号",
+      tone: invalid ? "warn" : "",
+      progress: accountsTotal ? invalid / accountsTotal : 0,
     },
     {
       label: "可用 Session",
@@ -675,6 +708,7 @@ function renderOverviewSignals(overview) {
   const counts = overview.counts || {};
   const accountsTotal = Number(counts.accounts || 0);
   const healthy = Number(counts.healthy || 0);
+  const invalid = Number(counts.invalid || 0);
   const blacklisted = Number(counts.blacklisted || 0);
   const enabledKeys = (overview.apiKeys || []).filter((item) => item.enabled).length;
   const totalKeys = (overview.apiKeys || []).length;
@@ -683,11 +717,11 @@ function renderOverviewSignals(overview) {
 
   refs.providerBadge.textContent = provider;
   refs.sessionTtlBadge.textContent = ttlMinutes ? `${ttlMinutes} 分钟` : "未配置";
-  refs.accountHealthBadge.textContent = accountsTotal ? `${healthy}/${accountsTotal} 健康` : "暂无账号";
+  refs.accountHealthBadge.textContent = accountsTotal ? `${healthy} 健康 / ${invalid} 失效 / ${blacklisted} 拉黑` : "暂无账号";
   refs.keyPolicyBadge.textContent = totalKeys ? `${enabledKeys}/${totalKeys} 启用` : "暂无 Key";
 
   refs.overviewNote.textContent = accountsTotal
-    ? `当前共有 ${accountsTotal} 个账号在池中，其中 ${healthy} 个健康，${blacklisted} 个被拉黑。${
+    ? `当前共有 ${accountsTotal} 个账号在池中，其中 ${healthy} 个健康，${invalid} 个失效，${blacklisted} 个被拉黑。${
         ttlMinutes ? `管理员会话 TTL 为 ${ttlMinutes} 分钟。` : ""
       }`
     : "当前还没有账号，建议先在左侧创建单个账号，或使用批量导入把号池灌入系统。";
