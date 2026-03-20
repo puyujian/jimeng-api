@@ -774,6 +774,16 @@ export default class AccountPoolService {
       };
     }
 
+    if (/3018|permission denied/i.test(message)) {
+      return {
+        retryable: true,
+        blacklist: false,
+        status: "error" as AccountStatus,
+        reason: message || "当前账号无权执行该生成请求",
+        blacklistReleaseAt: null,
+      };
+    }
+
     if (
       compare?.(API_EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS) ||
       /1006|121101/.test(message) ||
