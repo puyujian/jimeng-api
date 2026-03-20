@@ -89,12 +89,14 @@ export async function generateImageComposition(
     sampleStrength = 0.5,
     negativePrompt = "",
     intelligentRatio = false,
+    signal,
   }: {
     ratio?: string;
     resolution?: string;
     sampleStrength?: number;
     negativePrompt?: string;
     intelligentRatio?: boolean;
+    signal?: AbortSignal;
   },
   refreshToken: string
 ) {
@@ -120,11 +122,11 @@ export async function generateImageComposition(
 
   // 获取积分
   try {
-    const { totalCredit } = await getCredit(refreshToken);
+    const { totalCredit } = await getCredit(refreshToken, signal);
     if (totalCredit <= 0) {
       logger.info("积分为 0，尝试收取今日积分...");
       try {
-        await receiveCredit(refreshToken);
+        await receiveCredit(refreshToken, signal);
       } catch (receiveError) {
         logger.warn(`收取积分失败: ${receiveError.message}. 这可能是因为: 1) 今日已收取过积分, 2) 账户受到风控限制, 3) 需要在官网手动收取首次积分`);
       }
@@ -141,13 +143,13 @@ export async function generateImageComposition(
       let imageId: string;
       if (typeof image === 'string') {
         logger.info(`正在处理第 ${i + 1}/${imageCount} 张图片 (URL)...`);
-        imageId = (await uploadImageFromUrl(image, refreshToken, regionInfo)).uri;
+        imageId = (await uploadImageFromUrl(image, refreshToken, regionInfo, signal)).uri;
       } else {
         logger.info(`正在处理第 ${i + 1}/${imageCount} 张图片 (Buffer)...`);
-        imageId = (await uploadImageBuffer(image, refreshToken, regionInfo)).uri;
+        imageId = (await uploadImageBuffer(image, refreshToken, regionInfo, signal)).uri;
       }
       uploadedImageIds.push(imageId);
-      await checkImageContent(imageId, refreshToken, regionInfo);
+      await checkImageContent(imageId, refreshToken, regionInfo, signal);
       logger.info(`图片 ${i + 1}/${imageCount} 上传成功: ${imageId}`);
     } catch (error) {
       logger.error(`图片 ${i + 1}/${imageCount} 上传失败: ${error.message}`);
@@ -229,7 +231,7 @@ export async function generateImageComposition(
     "post",
     "/mweb/v1/aigc_draft/generate",
     refreshToken,
-    { data: requestData, headers: { Referer: imageReferer } }
+    { data: requestData, headers: { Referer: imageReferer }, signal }
   );
 
   const historyId = aigc_data?.history_record_id;
@@ -244,7 +246,8 @@ export async function generateImageComposition(
     pollInterval: 10000, // 10秒轮询间隔
     expectedItemCount: 1,
     type: 'image',
-    timeoutSeconds: 1800 // 30 分钟超时
+    timeoutSeconds: 1800, // 30 分钟超时
+    signal,
   });
 
   const { result: pollingResult, data: finalTaskInfo } = await poller.poll(async () => {
@@ -267,7 +270,8 @@ export async function generateImageComposition(
             { scene: "normal", width: 360, height: 360, uniq_key: "360", format: "webp" }
           ]
         }
-      }
+      },
+      signal,
     });
 
     if (!response[historyId]) {
@@ -312,12 +316,14 @@ export async function generateImages(
     sampleStrength = 0.5,
     negativePrompt = "",
     intelligentRatio = false,
+    signal,
   }: {
     ratio?: string;
     resolution?: string;
     sampleStrength?: number;
     negativePrompt?: string;
     intelligentRatio?: boolean;
+    signal?: AbortSignal;
   },
   refreshToken: string
 ) {
@@ -325,7 +331,12 @@ export async function generateImages(
   const { model, userModel } = getModel(_model, regionInfo);
   logger.info(`使用模型: ${userModel} 映射模型: ${model} 分辨率: ${resolution} 比例: ${ratio} 精细度: ${sampleStrength} 智能比例: ${intelligentRatio}`);
 
-  return await generateImagesInternal(userModel, prompt, { ratio, resolution, sampleStrength, negativePrompt, intelligentRatio }, refreshToken);
+  return await generateImagesInternal(
+    userModel,
+    prompt,
+    { ratio, resolution, sampleStrength, negativePrompt, intelligentRatio, signal },
+    refreshToken,
+  );
 }
 
 /**
@@ -340,12 +351,14 @@ async function generateImagesInternal(
     sampleStrength = 0.5,
     negativePrompt = "",
     intelligentRatio = false,
+    signal,
   }: {
     ratio: string;
     resolution: string;
     sampleStrength?: number;
     negativePrompt?: string;
     intelligentRatio?: boolean;
+    signal?: AbortSignal;
   },
   refreshToken: string
 ) {
@@ -362,11 +375,14 @@ async function generateImagesInternal(
   logResolutionInfo(userModel, resolutionResult, regionInfo);
 
   // 获取积分
-  const { totalCredit, giftCredit, purchaseCredit, vipCredit } = await getCredit(refreshToken);
+  const { totalCredit, giftCredit, purchaseCredit, vipCredit } = await getCredit(
+    refreshToken,
+    signal,
+  );
   if (totalCredit <= 0) {
     logger.info("积分为 0，尝试收取今日积分...");
     try {
-      await receiveCredit(refreshToken);
+      await receiveCredit(refreshToken, signal);
       logger.info("积分收取成功，继续生成图片");
     } catch (receiveError) {
       logger.warn(`收取积分失败: ${receiveError.message}. 这可能是因为: 1) 今日已收取过积分, 2) 账户受到风控限制, 3) 需要在官网手动收取首次积分`);
@@ -386,7 +402,12 @@ async function generateImagesInternal(
   );
 
   if (isJimeng4xMultiImage) {
-    return await generateJimeng4xMultiImages(userModel, prompt, { ratio, resolution, sampleStrength, negativePrompt, intelligentRatio }, refreshToken);
+    return await generateJimeng4xMultiImages(
+      userModel,
+      prompt,
+      { ratio, resolution, sampleStrength, negativePrompt, intelligentRatio, signal },
+      refreshToken,
+    );
   }
 
   const componentId = util.uuid();
@@ -440,7 +461,7 @@ async function generateImagesInternal(
     "post",
     "/mweb/v1/aigc_draft/generate",
     refreshToken,
-    { data: requestData, headers: { Referer: imageReferer } }
+    { data: requestData, headers: { Referer: imageReferer }, signal }
   );
 
   const historyId = aigc_data?.history_record_id;
@@ -453,7 +474,8 @@ async function generateImagesInternal(
     pollInterval: 10000, // 10秒轮询间隔
     expectedItemCount: 4,
     type: 'image',
-    timeoutSeconds: 1800 // 30 分钟超时
+    timeoutSeconds: 1800, // 30 分钟超时
+    signal,
   });
 
   const { result: pollingResult, data: finalTaskInfo } = await poller.poll(async () => {
@@ -480,6 +502,7 @@ async function generateImagesInternal(
           ],
         }
       },
+      signal,
     });
 
     if (!response[historyId]) {
@@ -524,12 +547,14 @@ async function generateJimeng4xMultiImages(
     sampleStrength = 0.5,
     negativePrompt = "",
     intelligentRatio = false,
+    signal,
   }: {
     ratio?: string;
     resolution?: string;
     sampleStrength?: number;
     negativePrompt?: string;
     intelligentRatio?: boolean;
+    signal?: AbortSignal;
   },
   refreshToken: string
 ) {
@@ -595,7 +620,7 @@ async function generateJimeng4xMultiImages(
     "post",
     "/mweb/v1/aigc_draft/generate",
     refreshToken,
-    { data: requestData, headers: { Referer: imageReferer } }
+    { data: requestData, headers: { Referer: imageReferer }, signal }
   );
 
   const historyId = aigc_data?.history_record_id;
@@ -610,7 +635,8 @@ async function generateJimeng4xMultiImages(
     pollInterval: 10000, // 10秒轮询间隔
     expectedItemCount: targetImageCount,
     type: 'image',
-    timeoutSeconds: 1800 // 30 分钟超时
+    timeoutSeconds: 1800, // 30 分钟超时
+    signal,
   });
 
   const { result: pollingResult, data: finalTaskInfo } = await poller.poll(async () => {
@@ -634,6 +660,7 @@ async function generateJimeng4xMultiImages(
           ],
         },
       },
+      signal,
     });
 
     if (!result[historyId])

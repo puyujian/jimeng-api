@@ -78,7 +78,11 @@ export function extractVideoUrl(item: any): string | null {
  * @param refreshToken 刷新令牌
  * @returns 高质量视频URL，失败时返回 null
  */
-export async function fetchHighQualityVideoUrl(itemId: string, refreshToken: string): Promise<string | null> {
+export async function fetchHighQualityVideoUrl(
+  itemId: string,
+  refreshToken: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
   try {
     logger.info(`尝试获取高质量视频下载URL，item_id: ${itemId}`);
 
@@ -91,6 +95,7 @@ export async function fetchHighQualityVideoUrl(itemId: string, refreshToken: str
         },
         is_for_video_download: true,
       },
+      signal,
     });
 
     const responseStr = JSON.stringify(result);

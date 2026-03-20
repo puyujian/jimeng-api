@@ -10,8 +10,45 @@ import { generateVideo, DEFAULT_MODEL as DEFAULT_VIDEO_MODEL } from "./videos.ts
 import { JimengErrorHandler, withRetry } from "@/lib/error-handler.ts";
 import { RETRY_CONFIG } from "@/api/consts/common.ts";
 import { parseMessages, detectRequestType, base64ToBuffer } from "@/lib/message-parser.ts";
+import { abortableDelay, createAbortError, isAbortError, throwIfAborted } from "@/lib/abort.ts";
 
 type ChatTokenExecutor = <T>(handler: (token: string) => Promise<T>) => Promise<T>;
+
+function summarizeChatMessages(messages: any[]) {
+  return messages.map((message, index) => {
+    const content = message?.content;
+    const summary: Record<string, any> = {
+      index,
+      role: message?.role || "unknown",
+    };
+
+    if (typeof content === "string") {
+      summary.contentLength = content.length;
+      return summary;
+    }
+
+    if (Array.isArray(content)) {
+      summary.parts = content.map((part: any) => {
+        if (part?.type === "text") {
+          return {
+            type: "text",
+            length: String(part?.text || "").length,
+          };
+        }
+
+        return {
+          type: part?.type || "unknown",
+          hasUrl: Boolean(part?.image_url?.url || part?.url),
+          hasBase64: Boolean(part?.image_base64 || part?.base64),
+        };
+      });
+      return summary;
+    }
+
+    summary.contentType = content == null ? "empty" : typeof content;
+    return summary;
+  });
+}
 
 async function runWithChatToken<T>(
   refreshToken: string,
@@ -71,7 +108,7 @@ export async function createCompletion(
     if (messages.length === 0)
       throw new APIException(EX.API_REQUEST_PARAMS_INVALID, "消息不能为空");
 
-    logger.info(messages);
+    logger.info(`聊天请求摘要: ${JSON.stringify(summarizeChatMessages(messages))}`);
 
     const userMessages = messages.filter((message) => message?.role === "user");
     const targetMessages = userMessages.length > 0 ? [userMessages[userMessages.length - 1]] : [messages[messages.length - 1]];
@@ -262,8 +299,15 @@ export async function createCompletion(
       logger.error(`Response error: ${err.stack}`);
       logger.warn(`Try again after ${RETRY_CONFIG.RETRY_DELAY / 1000}s...`);
       return (async () => {
-        await new Promise((resolve) => setTimeout(resolve, RETRY_CONFIG.RETRY_DELAY));
-        return createCompletion(messages, refreshToken, _model, options, retryCount + 1);
+        await abortableDelay(RETRY_CONFIG.RETRY_DELAY);
+        return createCompletion(
+          messages,
+          refreshToken,
+          _model,
+          options,
+          retryCount + 1,
+          tokenExecutor,
+        );
       })();
     }
     throw err;
@@ -285,15 +329,34 @@ export async function createCompletionStream(
   _model = DEFAULT_MODEL,
   options: any = {},
   retryCount = 0,
-  tokenExecutor?: ChatTokenExecutor
+  tokenExecutor?: ChatTokenExecutor,
+  streamSignal?: AbortSignal,
 ) {
   return (async () => {
-    logger.info(messages);
+    throwIfAborted(streamSignal, "流式生成已取消");
+    logger.info(`流式聊天请求摘要: ${JSON.stringify(summarizeChatMessages(messages))}`);
 
     const stream = new PassThrough();
+    const controller = new AbortController();
+    const cancelReason = createAbortError("客户端已断开，取消后台生成任务");
+    let taskFinished = false;
+
+    const cancelGeneration = () => {
+      if (taskFinished || controller.signal.aborted) return;
+      controller.abort(cancelReason);
+    };
+
+    if (streamSignal?.aborted) {
+      cancelGeneration();
+    } else {
+      streamSignal?.addEventListener("abort", cancelGeneration, { once: true });
+    }
+    stream.once("close", cancelGeneration);
+    stream.once("error", cancelGeneration);
 
     if (messages.length === 0) {
       logger.warn("消息为空，返回空流");
+      taskFinished = true;
       stream.end("data: [DONE]\n\n");
       return stream;
     }
@@ -461,7 +524,10 @@ export async function createCompletionStream(
           generateVideo(
             _model,
             finalPrompt,
-            videoOptions,
+            {
+              ...videoOptions,
+              signal: controller.signal,
+            },
             currentToken
           )
       )
@@ -512,6 +578,7 @@ export async function createCompletionStream(
                 }) +
                 "\n\n"
             );
+            taskFinished = true;
             stream.end("data: [DONE]\n\n");
           } else {
             logger.debug('视频生成完成，但流已关闭，跳过写入');
@@ -521,8 +588,13 @@ export async function createCompletionStream(
           clearInterval(progressInterval);
           clearTimeout(timeoutId);
 
+          if (isAbortError(err) || controller.signal.aborted) {
+            logger.info("[Stream] 客户端已断开，视频生成任务已取消");
+            return;
+          }
+
           logger.error(`视频生成失败: ${err.message}`);
-          logger.error(`错误详情: ${JSON.stringify(err)}`);
+          logger.error(`错误详情: ${err?.stack || err?.message || err}`);
 
           // 构建更详细的错误信息
           let errorMessage = `⚠️ 视频生成过程中遇到问题: ${err.message}`;
@@ -562,6 +634,7 @@ export async function createCompletionStream(
                 }) +
                 "\n\n"
             );
+            taskFinished = true;
             stream.end("data: [DONE]\n\n");
           } else {
             logger.debug('视频生成失败，但流已关闭，跳过错误信息写入');
@@ -588,6 +661,7 @@ export async function createCompletionStream(
               resolution: options.resolution || "2k",
               sampleStrength: options.sample_strength || 0.5,
               negativePrompt: options.negative_prompt || "",
+              signal: controller.signal,
             },
             currentToken
           )
@@ -617,12 +691,18 @@ export async function createCompletionStream(
                   "\n\n"
               );
             }
+            taskFinished = true;
             stream.end("data: [DONE]\n\n");
           } else {
             logger.debug('[Stream] 图生图完成，但流已关闭，跳过写入');
           }
         })
         .catch((err) => {
+          if (isAbortError(err) || controller.signal.aborted) {
+            logger.info("[Stream] 客户端已断开，图生图任务已取消");
+            return;
+          }
+
           if (!stream.destroyed && stream.writable) {
             stream.write(
               "data: " +
@@ -643,6 +723,7 @@ export async function createCompletionStream(
                 }) +
                 "\n\n"
             );
+            taskFinished = true;
             stream.end("data: [DONE]\n\n");
           } else {
             logger.debug('[Stream] 图生图失败，但流已关闭，跳过错误信息写入');
@@ -664,6 +745,7 @@ export async function createCompletionStream(
               resolution: options.resolution || "2k",
               sampleStrength: options.sample_strength || 0.5,
               negativePrompt: options.negative_prompt || "",
+              signal: controller.signal,
             },
             currentToken
           )
@@ -693,12 +775,18 @@ export async function createCompletionStream(
                   "\n\n"
               );
             }
+            taskFinished = true;
             stream.end("data: [DONE]\n\n");
           } else {
             logger.debug('图像生成完成，但流已关闭，跳过写入');
           }
         })
         .catch((err) => {
+          if (isAbortError(err) || controller.signal.aborted) {
+            logger.info("[Stream] 客户端已断开，文生图任务已取消");
+            return;
+          }
+
           // 检查流是否仍然可写
           if (!stream.destroyed && stream.writable) {
             stream.write(
@@ -720,6 +808,7 @@ export async function createCompletionStream(
                 }) +
                 "\n\n"
             );
+            taskFinished = true;
             stream.end("data: [DONE]\n\n");
           } else {
             logger.debug('图像生成失败，但流已关闭，跳过错误信息写入');
@@ -728,18 +817,23 @@ export async function createCompletionStream(
     }
     return stream;
   })().catch((err) => {
+    if (isAbortError(err)) {
+      throw err;
+    }
+
     if (retryCount < RETRY_CONFIG.MAX_RETRY_COUNT) {
       logger.error(`Response error: ${err.stack}`);
       logger.warn(`Try again after ${RETRY_CONFIG.RETRY_DELAY / 1000}s...`);
       return (async () => {
-        await new Promise((resolve) => setTimeout(resolve, RETRY_CONFIG.RETRY_DELAY));
+        await abortableDelay(RETRY_CONFIG.RETRY_DELAY, streamSignal, "流式重试等待已取消");
         return createCompletionStream(
           messages,
           refreshToken,
           _model,
           options,
           retryCount + 1,
-          tokenExecutor
+          tokenExecutor,
+          streamSignal,
         );
       })();
     }

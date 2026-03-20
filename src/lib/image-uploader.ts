@@ -31,7 +31,8 @@ export interface ImageUploadResult {
 export async function uploadImageBuffer(
   imageBuffer: ArrayBuffer | Buffer,
   refreshToken: string,
-  regionInfo: RegionInfo
+  regionInfo: RegionInfo,
+  signal?: AbortSignal,
 ): Promise<ImageUploadResult> {
   try {
     logger.info(`开始上传图片Buffer... (isInternational: ${regionInfo.isInternational})`);
@@ -41,6 +42,7 @@ export async function uploadImageBuffer(
       data: {
         scene: 2, // AIGC 图片上传场景
       },
+      signal,
     });
 
     const { access_key_id, secret_access_key, session_token } = tokenResult;
@@ -99,6 +101,7 @@ export async function uploadImageBuffer(
           'x-amz-date': timestamp,
           'x-amz-security-token': session_token,
         },
+        signal,
         validateStatus: () => true,
       });
     } catch (fetchError: any) {
@@ -155,6 +158,7 @@ export async function uploadImageBuffer(
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
         },
         data: imageBuffer,
+        signal,
         validateStatus: () => true,
       });
     } catch (fetchError: any) {
@@ -211,6 +215,7 @@ export async function uploadImageBuffer(
           'x-amz-content-sha256': payloadHash,
         },
         data: commitPayload,
+        signal,
         validateStatus: () => true,
       });
     } catch (fetchError: any) {
@@ -266,20 +271,22 @@ export async function uploadImageBuffer(
 export async function uploadImageFromUrl(
   imageUrl: string,
   refreshToken: string,
-  regionInfo: RegionInfo
+  regionInfo: RegionInfo,
+  signal?: AbortSignal,
 ): Promise<ImageUploadResult> {
   try {
     logger.info(`开始从URL下载并上传图片: ${imageUrl}`);
 
     const imageResponse = await axios.get(imageUrl, {
       responseType: 'arraybuffer',
+      signal,
     });
     if (imageResponse.status < 200 || imageResponse.status >= 300) {
       throw new Error(`下载图片失败: ${imageResponse.status}`);
     }
 
     const imageBuffer = imageResponse.data;
-    return await uploadImageBuffer(imageBuffer, refreshToken, regionInfo);
+    return await uploadImageBuffer(imageBuffer, refreshToken, regionInfo, signal);
   } catch (error: any) {
     logger.error(`从URL上传图片失败: ${error.message}`);
     throw error;

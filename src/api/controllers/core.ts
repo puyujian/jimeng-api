@@ -10,6 +10,12 @@ import EX from "@/api/consts/exceptions.ts";
 import logger from "@/lib/logger.ts";
 import util from "@/lib/util.ts";
 import { JimengErrorHandler, JimengErrorResponse } from "@/lib/error-handler.ts";
+import {
+  abortableDelay,
+  isAbortError,
+  normalizeAbortError,
+  throwIfAborted,
+} from "@/lib/abort.ts";
 import { BASE_URL_DREAMINA_US, BASE_URL_DREAMINA_HK, DA_VERSION, WEB_VERSION } from "@/api/consts/dreamina.ts";
 
 import {
@@ -200,7 +206,7 @@ export function generateCookie(refreshToken: string) {
  *
  * @param refreshToken 用于刷新access_token的refresh_token
  */
-export async function getCredit(refreshToken: string) {
+export async function getCredit(refreshToken: string, signal?: AbortSignal) {
   const referer = getRefererByRegion(refreshToken, "/ai-tool/image/generate");
 
   const {
@@ -210,7 +216,8 @@ export async function getCredit(refreshToken: string) {
     headers: {
       Referer: referer,
     },
-    noDefaultParams: true
+    noDefaultParams: true,
+    signal,
   });
   logger.info(`\n积分信息: \n赠送积分: ${gift_credit}, 购买积分: ${purchase_credit}, VIP积分: ${vip_credit}`);
   return {
@@ -226,7 +233,7 @@ export async function getCredit(refreshToken: string) {
  *
  * @param refreshToken 用于刷新access_token的refresh_token
  */
-export async function receiveCredit(refreshToken: string) {
+export async function receiveCredit(refreshToken: string, signal?: AbortSignal) {
   logger.info("正在尝试收取今日积分...")
   const referer = getRefererByRegion(refreshToken, "/ai-tool/home");
 
@@ -236,7 +243,8 @@ export async function receiveCredit(refreshToken: string) {
     },
     headers: {
       Referer: referer
-    }
+    },
+    signal,
   });
   logger.info(`今日${receive_quota}积分收取成功`);
   return receive_quota;
@@ -304,6 +312,8 @@ export async function request(
   const origin = new URL(baseUrl).origin;
 
   const fullUrl = `${baseUrl}${uri}`;
+  const methodLabel = method.toUpperCase();
+  const abortMessage = `请求已取消: ${methodLabel} ${fullUrl}`;
   const requestParams = options.noDefaultParams ? (options.params || {}) : {
     aid: aid,
     device_platform: "web",
@@ -357,10 +367,11 @@ export async function request(
 
   while (retries <= maxRetries) {
     try {
+      throwIfAborted(options.signal, abortMessage);
       if (retries > 0) {
-        logger.info(`第 ${retries} 次重试请求: ${method.toUpperCase()} ${fullUrl}`);
+        logger.info(`第 ${retries} 次重试请求: ${methodLabel} ${fullUrl}`);
         // 重试前等待一段时间
-        await new Promise(resolve => setTimeout(resolve, RETRY_CONFIG.RETRY_DELAY));
+        await abortableDelay(RETRY_CONFIG.RETRY_DELAY, options.signal, abortMessage);
       }
 
       const proxyAgent = currentProxyUrl
@@ -426,6 +437,10 @@ export async function request(
       return checkResult(response);
     }
     catch (error) {
+      if (isAbortError(error) || options.signal?.aborted) {
+        throw normalizeAbortError(error, abortMessage);
+      }
+
       lastError = error;
       logger.error(`请求失败 (尝试 ${retries + 1}/${maxRetries + 1}): ${error.message}`);
 
@@ -487,7 +502,8 @@ export async function request(
 export async function checkImageContent(
   imageUri: string,
   refreshToken: string,
-  regionInfo: RegionInfo
+  regionInfo: RegionInfo,
+  signal?: AbortSignal,
 ): Promise<void> {
   // 仅国内站需要内容检测
   if (regionInfo.isInternational) return;
@@ -513,6 +529,7 @@ export async function checkImageContent(
         file_list: [{ file_uri: imageUri }],
         req_params: {},
       },
+      signal,
     });
     logger.info(`图片内容安全检测通过: ${imageUri}`);
   } catch (error: any) {

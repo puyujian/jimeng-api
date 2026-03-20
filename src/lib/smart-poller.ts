@@ -1,6 +1,7 @@
 import logger from "@/lib/logger.ts";
 import { STATUS_CODE_MAP, POLLING_CONFIG } from "@/api/consts/common.ts";
 import { handlePollingTimeout, handleGenerationFailure } from "@/lib/error-handler.ts";
+import { abortableDelay, isAbortError, throwIfAborted } from "@/lib/abort.ts";
 
 const SMART_POLLER_VERBOSE = process.env.JIMENG_SMART_POLLER_VERBOSE === "1";
 const SMART_POLLER_PROGRESS_LOG_INTERVAL_SECONDS = Math.max(
@@ -23,6 +24,7 @@ export interface PollingOptions {
   timeoutSeconds?: number;
   expectedItemCount?: number;
   type?: "image" | "video";
+  signal?: AbortSignal;
 }
 
 export interface PollingResult {
@@ -41,7 +43,7 @@ export class SmartPoller {
   private stableItemCountRounds = 0;
   private lastLoggedStatusKey = "";
   private lastProgressLoggedAt = 0;
-  private options: Required<PollingOptions>;
+  private options: Required<Omit<PollingOptions, "signal">> & { signal?: AbortSignal };
 
   constructor(options: PollingOptions = {}) {
     this.options = {
@@ -51,6 +53,7 @@ export class SmartPoller {
       timeoutSeconds: options.timeoutSeconds ?? POLLING_CONFIG.TIMEOUT_SECONDS,
       expectedItemCount: options.expectedItemCount ?? 4,
       type: options.type ?? "image",
+      signal: options.signal,
     };
   }
 
@@ -161,6 +164,7 @@ export class SmartPoller {
     pollFunction: () => Promise<{ status: PollingStatus; data: T }>,
     historyId?: string,
   ): Promise<{ result: PollingResult; data: T }> {
+    throwIfAborted(this.options.signal, "轮询已取消");
     logger.info(
       `开始智能轮询: historyId=${historyId || "N/A"}, 最大轮询次数=${this.options.maxPollCount}, 期望结果数=${this.options.expectedItemCount}`,
     );
@@ -169,6 +173,7 @@ export class SmartPoller {
     let lastStatus: PollingStatus = { status: 20, itemCount: 0 };
 
     while (true) {
+      throwIfAborted(this.options.signal, "轮询已取消");
       this.pollCount++;
       const elapsedTime = Math.round((Date.now() - this.startTime) / 1000);
 
@@ -218,9 +223,13 @@ export class SmartPoller {
 
         const nextInterval = this.getSmartInterval(status.status);
         if (nextInterval > 0) {
-          await new Promise((resolve) => setTimeout(resolve, nextInterval));
+          await abortableDelay(nextInterval, this.options.signal, "轮询等待已取消");
         }
       } catch (error: any) {
+        if (isAbortError(error) || this.options.signal?.aborted) {
+          throw error;
+        }
+
         const retryableErrorCodes = [
           "ECONNABORTED",
           "ETIMEDOUT",
@@ -245,7 +254,11 @@ export class SmartPoller {
           logger.warn(
             `轮询过程中发生网络错误 (${error?.code || errorMessage})，等待后继续轮询...`,
           );
-          await new Promise((resolve) => setTimeout(resolve, this.options.pollInterval));
+          await abortableDelay(
+            this.options.pollInterval,
+            this.options.signal,
+            "轮询重试等待已取消",
+          );
           continue;
         }
 

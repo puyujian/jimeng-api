@@ -36,7 +36,8 @@ export interface VideoUploadResult {
 export async function uploadVideoBuffer(
   videoBuffer: ArrayBuffer | Buffer,
   refreshToken: string,
-  regionInfo: RegionInfo
+  regionInfo: RegionInfo,
+  signal?: AbortSignal,
 ): Promise<VideoUploadResult> {
   try {
     const fileSize = videoBuffer.byteLength;
@@ -47,6 +48,7 @@ export async function uploadVideoBuffer(
       data: {
         scene: 1, // VOD 视频上传场景
       },
+      signal,
     });
 
     const { access_key_id, secret_access_key, session_token, space_name } = tokenResult;
@@ -103,6 +105,7 @@ export async function uploadVideoBuffer(
           'x-amz-date': timestamp,
           'x-amz-security-token': session_token,
         },
+        signal,
         validateStatus: () => true,
       });
     } catch (fetchError: any) {
@@ -168,6 +171,7 @@ export async function uploadVideoBuffer(
         data: videoBuffer,
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
+        signal,
         validateStatus: () => true,
       });
     } catch (fetchError: any) {
@@ -235,6 +239,7 @@ export async function uploadVideoBuffer(
           'x-amz-content-sha256': payloadHash,
         },
         data: commitPayload,
+        signal,
         validateStatus: () => true,
       });
     } catch (fetchError: any) {
@@ -302,7 +307,8 @@ export async function uploadVideoBuffer(
 export async function uploadVideoFromUrl(
   videoUrl: string,
   refreshToken: string,
-  regionInfo: RegionInfo
+  regionInfo: RegionInfo,
+  signal?: AbortSignal,
 ): Promise<VideoUploadResult> {
   try {
     logger.info(`开始从URL下载并上传视频: ${videoUrl}`);
@@ -311,6 +317,7 @@ export async function uploadVideoFromUrl(
       responseType: 'arraybuffer',
       maxContentLength: Infinity,
       maxBodyLength: Infinity,
+      signal,
     });
     if (videoResponse.status < 200 || videoResponse.status >= 300) {
       throw new Error(`下载视频失败: ${videoResponse.status}`);
@@ -318,7 +325,7 @@ export async function uploadVideoFromUrl(
 
     const videoBuffer = videoResponse.data;
     logger.info(`视频下载完成: ${videoBuffer.byteLength} 字节`);
-    return await uploadVideoBuffer(videoBuffer, refreshToken, regionInfo);
+    return await uploadVideoBuffer(videoBuffer, refreshToken, regionInfo, signal);
   } catch (error: any) {
     logger.error(`从URL上传视频失败: ${error.message}`);
     throw error;

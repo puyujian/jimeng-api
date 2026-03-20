@@ -15,6 +15,7 @@ import { uploadImageBuffer, ImageUploadResult } from "@/lib/image-uploader.ts";
 import { uploadVideoBuffer, VideoUploadResult } from "@/lib/video-uploader.ts";
 import { extractVideoUrl, fetchHighQualityVideoUrl } from "@/lib/image-utils.ts";
 import { uploadVideoFromUrl } from "@/lib/video-uploader.ts";
+import { abortableDelay } from "@/lib/abort.ts";
 
 export const DEFAULT_MODEL = DEFAULT_VIDEO_MODEL;
 
@@ -60,7 +61,12 @@ function getVideoBenefitType(model: string): string {
 }
 
 // 处理本地上传的文件
-async function uploadImageFromFile(file: any, refreshToken: string, regionInfo: RegionInfo): Promise<ImageUploadResult> {
+async function uploadImageFromFile(
+  file: any,
+  refreshToken: string,
+  regionInfo: RegionInfo,
+  signal?: AbortSignal,
+): Promise<ImageUploadResult> {
   try {
     let imageBuffer: Buffer | null = null;
     let fileName = "";
@@ -83,7 +89,7 @@ async function uploadImageFromFile(file: any, refreshToken: string, regionInfo: 
     }
 
     logger.info(`开始上传视频图片: ${fileName || "unknown"}`);
-    return await uploadImageBuffer(imageBuffer, refreshToken, regionInfo);
+    return await uploadImageBuffer(imageBuffer, refreshToken, regionInfo, signal);
   } catch (error: any) {
     logger.error(`从本地文件上传视频图片失败: ${error.message}`);
     throw error;
@@ -91,18 +97,24 @@ async function uploadImageFromFile(file: any, refreshToken: string, regionInfo: 
 }
 
 // 处理来自URL的图片
-async function uploadImageFromUrl(imageUrl: string, refreshToken: string, regionInfo: RegionInfo): Promise<ImageUploadResult> {
+async function uploadImageFromUrl(
+  imageUrl: string,
+  refreshToken: string,
+  regionInfo: RegionInfo,
+  signal?: AbortSignal,
+): Promise<ImageUploadResult> {
   try {
     logger.info(`开始从URL下载并上传视频图片: ${imageUrl}`);
     const imageResponse = await axios.get(imageUrl, {
       responseType: 'arraybuffer',
       proxy: false,
+      signal,
     });
     if (imageResponse.status < 200 || imageResponse.status >= 300) {
       throw new Error(`下载图片失败: ${imageResponse.status}`);
     }
     const imageBuffer = imageResponse.data;
-    return await uploadImageBuffer(imageBuffer, refreshToken, regionInfo);
+    return await uploadImageBuffer(imageBuffer, refreshToken, regionInfo, signal);
   } catch (error: any) {
     logger.error(`从URL上传视频图片失败: ${error.message}`);
     throw error;
@@ -184,6 +196,7 @@ export async function generateVideo(
     files = {},
     httpRequest,
     functionMode = "first_last_frames",
+    signal,
   }: {
     ratio?: string;
     resolution?: string;
@@ -192,6 +205,7 @@ export async function generateVideo(
     files?: any;
     httpRequest?: any;
     functionMode?: string;
+    signal?: AbortSignal;
   },
   refreshToken: string
 ) {
@@ -255,11 +269,11 @@ export async function generateVideo(
   logger.info(`使用模型: ${_model} 映射模型: ${model} 比例: ${ratio} 分辨率: ${supportsResolution ? resolution : '不支持'} 时长: ${actualDuration}s`);
 
   // 检查积分
-  const { totalCredit } = await getCredit(refreshToken);
+  const { totalCredit } = await getCredit(refreshToken, signal);
   if (totalCredit <= 0) {
     logger.info("积分为 0，尝试收取今日积分...");
     try {
-      await receiveCredit(refreshToken);
+      await receiveCredit(refreshToken, signal);
     } catch (receiveError) {
       logger.warn(`收取积分失败: ${receiveError.message}. 这可能是因为: 1) 今日已收取过积分, 2) 账户受到风控限制, 3) 需要在官网手动收取首次积分`);
       throw new APIException(EX.API_VIDEO_GENERATION_FAILED,
@@ -364,8 +378,8 @@ export async function generateVideo(
         if (imageFile) {
           // 本地文件上传
           const buf = await fs.readFile(imageFile.filepath);
-          imgResult = await uploadImageBuffer(buf, refreshToken, regionInfo);
-          await checkImageContent(imgResult.uri, refreshToken, regionInfo);
+          imgResult = await uploadImageBuffer(buf, refreshToken, regionInfo, signal);
+          await checkImageContent(imgResult.uri, refreshToken, regionInfo, signal);
           const entry: MaterialEntry = {
             idx: materialIdx++,
             type: "image",
@@ -381,8 +395,8 @@ export async function generateVideo(
           logger.info(`[omni] ${fieldName} 上传成功: ${imgResult.uri} (${imgResult.width}x${imgResult.height})`);
         } else if (imageUrlField && typeof imageUrlField === 'string' && imageUrlField.startsWith('http')) {
           // URL上传
-          imgResult = await uploadImageFromUrl(imageUrlField, refreshToken, regionInfo);
-          await checkImageContent(imgResult.uri, refreshToken, regionInfo);
+          imgResult = await uploadImageFromUrl(imageUrlField, refreshToken, regionInfo, signal);
+          await checkImageContent(imgResult.uri, refreshToken, regionInfo, signal);
           const entry: MaterialEntry = {
             idx: materialIdx++,
             type: "image",
@@ -414,8 +428,8 @@ export async function generateVideo(
         const fieldName = `image_file_${slotIndex}`;
         try {
           logger.info(`[omni] 从URL上传 ${fieldName}: ${url}`);
-          const imgResult = await uploadImageFromUrl(url, refreshToken, regionInfo);
-          await checkImageContent(imgResult.uri, refreshToken, regionInfo);
+          const imgResult = await uploadImageFromUrl(url, refreshToken, regionInfo, signal);
+          await checkImageContent(imgResult.uri, refreshToken, regionInfo, signal);
           const entry: MaterialEntry = {
             idx: materialIdx++,
             type: "image",
@@ -447,7 +461,7 @@ export async function generateVideo(
         if (videoFile) {
           // 本地文件上传
           const buf = await fs.readFile(videoFile.filepath);
-          vResult = await uploadVideoBuffer(buf, refreshToken, regionInfo);
+          vResult = await uploadVideoBuffer(buf, refreshToken, regionInfo, signal);
           totalVideoDuration += vResult.videoMeta.duration;
           const entry: MaterialEntry = {
             idx: materialIdx++,
@@ -461,7 +475,7 @@ export async function generateVideo(
           logger.info(`[omni] ${fieldName} 上传成功: vid=${vResult.vid}, ${vResult.videoMeta.width}x${vResult.videoMeta.height}, ${vResult.videoMeta.duration}s`);
         } else if (videoUrlField && typeof videoUrlField === 'string' && videoUrlField.startsWith('http')) {
           // URL上传
-          vResult = await uploadVideoFromUrl(videoUrlField, refreshToken, regionInfo);
+          vResult = await uploadVideoFromUrl(videoUrlField, refreshToken, regionInfo, signal);
           totalVideoDuration += vResult.videoMeta.duration;
           const entry: MaterialEntry = {
             idx: materialIdx++,
@@ -678,9 +692,9 @@ export async function generateVideo(
         if (!file) continue;
         try {
           logger.info(`开始上传第 ${i + 1} 张本地图片: ${file.originalFilename}`);
-          const imgResult = await uploadImageFromFile(file, refreshToken, regionInfo);
+          const imgResult = await uploadImageFromFile(file, refreshToken, regionInfo, signal);
           if (imgResult) {
-            await checkImageContent(imgResult.uri, refreshToken, regionInfo);
+            await checkImageContent(imgResult.uri, refreshToken, regionInfo, signal);
             uploadIDs.push(imgResult.uri);
             logger.info(`第 ${i + 1} 张本地图片上传成功: ${imgResult.uri}`);
           } else {
@@ -703,9 +717,9 @@ export async function generateVideo(
         }
         try {
           logger.info(`开始上传第 ${i + 1} 个URL图片: ${filePath}`);
-          const imgResult = await uploadImageFromUrl(filePath, refreshToken, regionInfo);
+          const imgResult = await uploadImageFromUrl(filePath, refreshToken, regionInfo, signal);
           if (imgResult) {
-            await checkImageContent(imgResult.uri, refreshToken, regionInfo);
+            await checkImageContent(imgResult.uri, refreshToken, regionInfo, signal);
             uploadIDs.push(imgResult.uri);
             logger.info(`第 ${i + 1} 个URL图片上传成功: ${imgResult.uri}`);
           } else {
@@ -874,6 +888,7 @@ export async function generateVideo(
     {
       ...requestData,
       headers: { Referer: videoReferer },
+      signal,
     }
   );
 
@@ -884,7 +899,7 @@ export async function generateVideo(
   logger.info(`视频生成任务已提交，history_id: ${historyId}，等待生成完成...`);
 
   // 首次查询前等待，让服务器有时间处理请求
-  await new Promise((resolve) => setTimeout(resolve, 5000));
+  await abortableDelay(5000, signal, "视频轮询等待已取消");
 
   // 使用 SmartPoller 进行智能轮询
   const maxPollCount = 900; // 增加轮询次数，支持更长的生成时间
@@ -895,7 +910,8 @@ export async function generateVideo(
     pollInterval: 20000, // 20秒基础间隔
     expectedItemCount: 1,
     type: 'video',
-    timeoutSeconds: 3600 // 60分钟超时
+    timeoutSeconds: 3600, // 60分钟超时
+    signal,
   });
 
   const { result: pollingResult, data: finalHistoryData } = await poller.poll(async () => {
@@ -906,6 +922,7 @@ export async function generateVideo(
       data: {
         history_ids: [historyId],
       },
+      signal,
     });
 
     // 检查响应中是否有该 history_id 的数据
@@ -963,7 +980,7 @@ export async function generateVideo(
 
   if (itemId) {
     try {
-      const hqVideoUrl = await fetchHighQualityVideoUrl(String(itemId), refreshToken);
+      const hqVideoUrl = await fetchHighQualityVideoUrl(String(itemId), refreshToken, signal);
       if (hqVideoUrl) {
         logger.info(`视频生成成功（高质量），URL: ${hqVideoUrl}，总耗时: ${pollingResult.elapsedTime}秒`);
         return hqVideoUrl;
