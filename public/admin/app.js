@@ -324,7 +324,7 @@ function renderOutboundLogEntry(entry, index) {
   const accountLabel = escapeHtml(entry.accountLabel || "未知账号");
   const requestLine = escapeHtml(buildOutboundSummaryText(entry));
   const duration = formatDurationMs(entry.durationMs);
-  const time = formatOutboundTime(entry.time);
+  const time = formatOutboundTime(entry.completedTime || entry.time);
   const detailText = escapeHtml(entry.detailText || "");
   const detailId = outboundDetailId(entry);
   const taskKey = outboundEntryKey(entry);

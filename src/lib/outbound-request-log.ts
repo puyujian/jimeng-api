@@ -325,6 +325,13 @@ function deriveGenerationStatus(requestKind: string, responseData: any, historyI
   };
 }
 
+function extractFinishTime(responseData: any, historyId: string | null) {
+  const taskInfo = findHistoryTaskInfo(responseData, historyId);
+  const rawValue = Number(taskInfo?.task?.finish_time ?? taskInfo?.finish_time ?? 0);
+  if (!Number.isFinite(rawValue) || rawValue <= 0) return null;
+  return Math.floor(rawValue);
+}
+
 function buildContextMeta() {
   const context = getOutboundLogContext();
   if (!context) return {};
@@ -390,6 +397,7 @@ function buildEndSummary(meta: OutboundLogMeta, response: any, duration: number)
     response?.data,
     derivedHistoryId,
   );
+  const finishTime = extractFinishTime(response?.data, historyId);
   const responseStatus = Number(response?.status || 0) || null;
   const failureReason = extractFailureReason(requestKind, response?.data, historyId);
   const isTaskFailed = generationStatus === "生成失败";
@@ -411,6 +419,7 @@ function buildEndSummary(meta: OutboundLogMeta, response: any, duration: number)
     generationStatus:
       generationStatus || (responseStatus >= 400 ? "生成失败" : null),
     generationStatusCode,
+    finishTime,
     errorMessage: resultStatus === "error" ? failureReason || response?.statusText || "" : "",
   };
 }

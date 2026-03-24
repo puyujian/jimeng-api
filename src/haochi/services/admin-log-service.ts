@@ -27,6 +27,7 @@ export interface OutboundLogEntry {
   requestId: string;
   requestIds: string[];
   time: string | null;
+  completedTime: string | null;
   level: string;
   source: string;
   method: string;
@@ -165,6 +166,7 @@ function createEntry(requestId: string): MutableOutboundLogEntry {
     requestId,
     requestIds: [requestId],
     time: null,
+    completedTime: null,
     level: "unknown",
     source: "unknown",
     method: "",
@@ -211,6 +213,8 @@ function applySummaryPayload(entry: MutableOutboundLogEntry, payload: any) {
     entry.status = payload.resultStatus;
   }
   if (payload.generationStatus) entry.generationStatus = String(payload.generationStatus);
+  const completedTime = formatFinishTimestamp(payload.finishTime);
+  if (completedTime) entry.completedTime = completedTime;
   if (payload.errorCode) entry.errorCode = String(payload.errorCode);
   if (payload.errorMessage) entry.errorMessage = String(payload.errorMessage);
 }
@@ -272,6 +276,29 @@ function compareLogTime(left: string | null, right: string | null) {
   return String(left || "").localeCompare(String(right || ""));
 }
 
+function normalizeFinishTimestamp(value: any) {
+  const raw = Number(value || 0);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  return raw > 1_000_000_000_000 ? Math.floor(raw) : Math.floor(raw * 1000);
+}
+
+function formatFinishTimestamp(value: any) {
+  const timestamp = normalizeFinishTimestamp(value);
+  if (!timestamp) return null;
+  return util.getDateString("yyyy-MM-dd HH:mm:ss.SSS", new Date(timestamp));
+}
+
+function resolveEntryTime(entry: Pick<OutboundLogEntry, "time" | "completedTime">) {
+  return entry.completedTime || entry.time;
+}
+
+function compareEntryTime(
+  left: Pick<OutboundLogEntry, "time" | "completedTime">,
+  right: Pick<OutboundLogEntry, "time" | "completedTime">,
+) {
+  return compareLogTime(resolveEntryTime(left), resolveEntryTime(right));
+}
+
 function resolveRequestGroupKey(entry: OutboundLogEntry) {
   if (entry.groupId) return `group:${entry.groupId}`;
   return `request:${entry.requestId}`;
@@ -287,6 +314,7 @@ function resolveTaskKey(entry: OutboundLogEntry) {
 function copyLatestEntryFields(target: MutableOutboundLogEntry, source: OutboundLogEntry) {
   target.requestId = source.requestId;
   target.time = source.time;
+  target.completedTime = source.completedTime;
   target.level = source.level;
   target.source = source.source;
   target.method = source.method;
@@ -334,7 +362,7 @@ function mergeEntriesByKey(entries: OutboundLogEntry[], resolveKey: (entry: Outb
     if (!existing.historyId && entry.historyId) existing.historyId = entry.historyId;
     if (!existing.groupId && entry.groupId) existing.groupId = entry.groupId;
 
-    if (compareLogTime(entry.time, existing.time) >= 0) {
+    if (compareEntryTime(entry, existing) >= 0) {
       copyLatestEntryFields(existing, entry);
       existing.taskKey = taskKey;
     }
@@ -373,6 +401,7 @@ function finalizeEntry(entry: MutableOutboundLogEntry): OutboundLogEntry {
 
   return {
     ...entry,
+    time: resolveEntryTime(entry),
     statusLabel,
     generationStatus,
     detailText: entry.rawLines.join("\n"),
@@ -419,13 +448,13 @@ function buildEntries(lines: string[]) {
 
   const requestEntries = Array.from(grouped.values())
     .map(finalizeEntry)
-    .sort((a, b) => compareLogTime(a.time, b.time));
+    .sort((a, b) => compareEntryTime(a, b));
 
   const requestGroupEntries = mergeEntriesByKey(requestEntries, resolveRequestGroupKey).sort((a, b) =>
-    compareLogTime(a.time, b.time),
+    compareEntryTime(a, b),
   );
   return mergeEntriesByKey(requestGroupEntries, resolveTaskKey).sort((a, b) =>
-    compareLogTime(b.time, a.time),
+    compareEntryTime(b, a),
   );
 }
 
@@ -440,6 +469,7 @@ function matchesKeyword(entry: OutboundLogEntry, keyword: string) {
     entry.method,
     entry.url,
     entry.requestPath,
+    entry.completedTime || "",
     entry.statusLabel,
     entry.generationStatus,
     entry.historyId || "",
