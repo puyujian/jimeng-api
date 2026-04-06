@@ -74,7 +74,12 @@ export default {
                     )
                 );
                 return new Response(stream, {
-                    type: "text/event-stream"
+                    type: "text/event-stream",
+                    headers: {
+                        "Cache-Control": "no-cache, no-transform",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"
+                    }
                 });
             }
             else

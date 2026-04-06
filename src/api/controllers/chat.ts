@@ -14,6 +14,8 @@ import { abortableDelay, createAbortError, isAbortError, throwIfAborted } from "
 
 type ChatTokenExecutor = <T>(handler: (token: string) => Promise<T>) => Promise<T>;
 
+const STREAM_KEEPALIVE_INTERVAL_MS = 10000;
+
 function summarizeChatMessages(messages: any[]) {
   return messages.map((message, index) => {
     const content = message?.content;
@@ -59,6 +61,63 @@ async function runWithChatToken<T>(
     return tokenExecutor(handler);
   }
   return handler(refreshToken);
+}
+
+function buildStreamChunk(
+  model: string,
+  index: number,
+  delta: Record<string, any>,
+  finishReason: string | null = null,
+) {
+  return (
+    "data: " +
+    JSON.stringify({
+      id: util.uuid(),
+      model,
+      object: "chat.completion.chunk",
+      choices: [
+        {
+          index,
+          delta,
+          finish_reason: finishReason,
+        },
+      ],
+    }) +
+    "\n\n"
+  );
+}
+
+function writeStreamChunk(
+  stream: PassThrough,
+  model: string,
+  index: number,
+  delta: Record<string, any>,
+  finishReason: string | null = null,
+) {
+  if (stream.destroyed || !stream.writable) {
+    return false;
+  }
+  stream.write(buildStreamChunk(model, index, delta, finishReason));
+  return true;
+}
+
+function writeStreamComment(stream: PassThrough, comment: string) {
+  if (stream.destroyed || !stream.writable) {
+    return false;
+  }
+  stream.write(`: ${comment}\n\n`);
+  return true;
+}
+
+function startStreamKeepalive(stream: PassThrough, requestType: string) {
+  const interval = setInterval(() => {
+    if (!writeStreamComment(stream, `${requestType} waiting`)) {
+      clearInterval(interval);
+    }
+  }, STREAM_KEEPALIVE_INTERVAL_MS);
+
+  interval.unref?.();
+  return () => clearInterval(interval);
 }
 
 /**
@@ -367,30 +426,22 @@ export async function createCompletionStream(
     const fallbackPrompt = parseMessages([messages[messages.length - 1]]).text;
     const finalPrompt = String(parsedPrompt || fallbackPrompt || "").trim();
     const requestType = detectRequestType(_model, hasImages);
+    const stopKeepalive = startStreamKeepalive(stream, requestType);
+
+    stream.once("close", stopKeepalive);
+    stream.once("error", stopKeepalive);
 
     logger.info(`[Stream] 智能路由请求类型: ${requestType}, 提示词长度: ${finalPrompt.length}, 图片数量: ${images.length}`);
     if (hasImages) {
       logger.info(`[Stream] 检测到图片输入，图片类型: ${images.map(img => img.type).join(', ')}`);
     }
+
+    writeStreamChunk(stream, _model, 0, { role: "assistant", content: "" }, null);
     
     if (hasImages && images.length === 0) {
       logger.error('[Stream] 路由检测到hasImages=true但images数组为空，这是一个bug');
-      stream.write(
-        "data: " +
-          JSON.stringify({
-            id: util.uuid(),
-            model: _model,
-            object: "chat.completion.chunk",
-            choices: [
-              {
-                index: 0,
-                delta: { role: "assistant", content: "消息解析错误：检测到图片标记但无法提取图片" },
-                finish_reason: "stop",
-              },
-            ],
-          }) +
-          "\n\n"
-      );
+      stopKeepalive();
+      writeStreamChunk(stream, _model, 0, { role: "assistant", content: "消息解析错误：检测到图片标记但无法提取图片" }, "stop");
       stream.end("data: [DONE]\n\n");
       return stream;
     }
@@ -415,22 +466,7 @@ export async function createCompletionStream(
       }
 
       // 视频生成
-      stream.write(
-        "data: " +
-          JSON.stringify({
-            id: util.uuid(),
-            model: _model,
-            object: "chat.completion.chunk",
-            choices: [
-              {
-                index: 0,
-                delta: { role: "assistant", content: "🎬 视频生成中，请稍候...\n这可能需要1-2分钟，请耐心等待" },
-                finish_reason: null,
-              },
-            ],
-          }) +
-          "\n\n"
-      );
+      writeStreamChunk(stream, _model, 0, { role: "assistant", content: "🎬 视频生成中，请稍候...\n这可能需要1-2分钟，请耐心等待" }, null);
 
       logger.info(`开始生成视频，提示词: ${finalPrompt}`);
 
@@ -440,22 +476,7 @@ export async function createCompletionStream(
           clearInterval(progressInterval);
           return;
         }
-        stream.write(
-          "data: " +
-            JSON.stringify({
-              id: util.uuid(),
-              model: _model,
-              object: "chat.completion.chunk",
-              choices: [
-                {
-                  index: 0,
-                  delta: { role: "assistant", content: "." },
-                  finish_reason: null,
-                },
-              ],
-            }) +
-            "\n\n"
-        );
+        writeStreamChunk(stream, _model, 0, { role: "assistant", content: "." }, null);
       }, 5000);
 
       // 设置超时，防止无限等待
@@ -463,24 +484,15 @@ export async function createCompletionStream(
         clearInterval(progressInterval);
         logger.warn(`视频生成超时（2分钟），提示用户前往即梦官网查看`);
         if (!stream.destroyed) {
-          stream.write(
-            "data: " +
-              JSON.stringify({
-                id: util.uuid(),
-                model: _model,
-                object: "chat.completion.chunk",
-                choices: [
-                  {
-                    index: 1,
-                    delta: {
-                      role: "assistant",
-                      content: "\n\n视频生成时间较长（已等待2分钟），但视频可能仍在生成中。\n\n请前往即梦官网查看您的视频：\n1. 访问 https://jimeng.jianying.com/ai-tool/video/generate\n2. 登录后查看您的创作历史\n3. 如果视频已生成，您可以直接在官网下载或分享\n\n您也可以继续等待，系统将在后台继续尝试获取视频（最长约20分钟）。",
-                    },
-                    finish_reason: "stop",
-                  },
-                ],
-              }) +
-              "\n\n"
+          writeStreamChunk(
+            stream,
+            _model,
+            1,
+            {
+              role: "assistant",
+              content: "\n\n视频生成时间较长（已等待2分钟），但视频可能仍在生成中。\n\n请前往即梦官网查看您的视频：\n1. 访问 https://jimeng.jianying.com/ai-tool/video/generate\n2. 登录后查看您的创作历史\n3. 如果视频已生成，您可以直接在官网下载或分享\n\n您也可以继续等待，系统将在后台继续尝试获取视频（最长约20分钟）。",
+            },
+            "stop",
           );
         }
         // 注意：这里不结束流，让后台继续尝试获取视频
@@ -497,24 +509,15 @@ export async function createCompletionStream(
       logger.info(`开始生成视频，模型: ${_model}, 提示词长度: ${finalPrompt.length}`);
 
       // 先给用户一个初始提示
-      stream.write(
-        "data: " +
-          JSON.stringify({
-            id: util.uuid(),
-            model: _model,
-            object: "chat.completion.chunk",
-            choices: [
-              {
-                index: 0,
-                delta: {
-                  role: "assistant",
-                  content: "\n\n🎬 视频生成已开始，这可能需要几分钟时间...",
-                },
-                finish_reason: null,
-              },
-            ],
-          }) +
-          "\n\n"
+      writeStreamChunk(
+        stream,
+        _model,
+        0,
+        {
+          role: "assistant",
+          content: "\n\n🎬 视频生成已开始，这可能需要几分钟时间...",
+        },
+        null,
       );
 
       runWithChatToken(
@@ -534,50 +537,24 @@ export async function createCompletionStream(
         .then((videoUrl) => {
           clearInterval(progressInterval);
           clearTimeout(timeoutId);
+          stopKeepalive();
 
           logger.info(`视频生成成功，URL: ${videoUrl}`);
 
           // 检查流是否仍然可写
           if (!stream.destroyed && stream.writable) {
-            stream.write(
-              "data: " +
-                JSON.stringify({
-                  id: util.uuid(),
-                  model: _model,
-                  object: "chat.completion.chunk",
-                  choices: [
-                    {
-                      index: 1,
-                      delta: {
-                        role: "assistant",
-                        content: `\n\n✅ 视频生成完成！\n\n![video](${videoUrl})\n\n您可以：\n1. 直接查看上方视频\n2. 使用以下链接下载或分享：${videoUrl}`,
-                      },
-                      finish_reason: null,
-                    },
-                  ],
-                }) +
-                "\n\n"
+            writeStreamChunk(
+              stream,
+              _model,
+              1,
+              {
+                role: "assistant",
+                content: `\n\n✅ 视频生成完成！\n\n![video](${videoUrl})\n\n您可以：\n1. 直接查看上方视频\n2. 使用以下链接下载或分享：${videoUrl}`,
+              },
+              null,
             );
 
-            stream.write(
-              "data: " +
-                JSON.stringify({
-                  id: util.uuid(),
-                  model: _model,
-                  object: "chat.completion.chunk",
-                  choices: [
-                    {
-                      index: 2,
-                      delta: {
-                        role: "assistant",
-                        content: "",
-                      },
-                      finish_reason: "stop",
-                    },
-                  ],
-                }) +
-                "\n\n"
-            );
+            writeStreamChunk(stream, _model, 2, { role: "assistant", content: "" }, "stop");
             taskFinished = true;
             stream.end("data: [DONE]\n\n");
           } else {
@@ -587,6 +564,7 @@ export async function createCompletionStream(
         .catch((err) => {
           clearInterval(progressInterval);
           clearTimeout(timeoutId);
+          stopKeepalive();
 
           if (isAbortError(err) || controller.signal.aborted) {
             logger.info("[Stream] 客户端已断开，视频生成任务已取消");
@@ -615,25 +593,7 @@ export async function createCompletionStream(
 
           // 检查流是否仍然可写
           if (!stream.destroyed && stream.writable) {
-            stream.write(
-              "data: " +
-                JSON.stringify({
-                  id: util.uuid(),
-                  model: _model,
-                  object: "chat.completion.chunk",
-                  choices: [
-                    {
-                      index: 1,
-                      delta: {
-                        role: "assistant",
-                        content: `\n\n${errorMessage}`,
-                      },
-                      finish_reason: "stop",
-                    },
-                  ],
-                }) +
-                "\n\n"
-            );
+            writeStreamChunk(stream, _model, 1, { role: "assistant", content: `\n\n${errorMessage}` }, "stop");
             taskFinished = true;
             stream.end("data: [DONE]\n\n");
           } else {
@@ -667,29 +627,12 @@ export async function createCompletionStream(
           )
       )
         .then((imageUrls) => {
+          stopKeepalive();
           if (!stream.destroyed && stream.writable) {
             for (let i = 0; i < imageUrls.length; i++) {
               const url = imageUrls[i];
               const isLast = i === imageUrls.length - 1;
-              stream.write(
-                "data: " +
-                  JSON.stringify({
-                    id: util.uuid(),
-                    model: _model || model,
-                    object: "chat.completion.chunk",
-                    choices: [
-                      {
-                        index: 0,
-                        delta: {
-                          role: "assistant",
-                          content: `![image_${i}](${url})\n`,
-                        },
-                        finish_reason: isLast ? "stop" : null,
-                      },
-                    ],
-                  }) +
-                  "\n\n"
-              );
+              writeStreamChunk(stream, _model || model, 0, { role: "assistant", content: `![image_${i}](${url})\n` }, isLast ? "stop" : null);
             }
             taskFinished = true;
             stream.end("data: [DONE]\n\n");
@@ -698,31 +641,14 @@ export async function createCompletionStream(
           }
         })
         .catch((err) => {
+          stopKeepalive();
           if (isAbortError(err) || controller.signal.aborted) {
             logger.info("[Stream] 客户端已断开，图生图任务已取消");
             return;
           }
 
           if (!stream.destroyed && stream.writable) {
-            stream.write(
-              "data: " +
-                JSON.stringify({
-                  id: util.uuid(),
-                  model: _model || model,
-                  object: "chat.completion.chunk",
-                  choices: [
-                    {
-                      index: 1,
-                      delta: {
-                        role: "assistant",
-                        content: `图生图失败: ${err.message}`,
-                      },
-                      finish_reason: "stop",
-                    },
-                  ],
-                }) +
-                "\n\n"
-            );
+            writeStreamChunk(stream, _model || model, 1, { role: "assistant", content: `图生图失败: ${err.message}` }, "stop");
             taskFinished = true;
             stream.end("data: [DONE]\n\n");
           } else {
@@ -751,29 +677,12 @@ export async function createCompletionStream(
           )
       )
         .then((imageUrls) => {
+          stopKeepalive();
           // 检查流是否仍然可写
           if (!stream.destroyed && stream.writable) {
             for (let i = 0; i < imageUrls.length; i++) {
               const url = imageUrls[i];
-              stream.write(
-                "data: " +
-                  JSON.stringify({
-                    id: util.uuid(),
-                    model: _model || model,
-                    object: "chat.completion.chunk",
-                    choices: [
-                      {
-                        index: i + 1,
-                        delta: {
-                          role: "assistant",
-                          content: `![image_${i}](${url})\n`,
-                        },
-                        finish_reason: i < imageUrls.length - 1 ? null : "stop",
-                      },
-                    ],
-                  }) +
-                  "\n\n"
-              );
+              writeStreamChunk(stream, _model || model, i + 1, { role: "assistant", content: `![image_${i}](${url})\n` }, i < imageUrls.length - 1 ? null : "stop");
             }
             taskFinished = true;
             stream.end("data: [DONE]\n\n");
@@ -782,6 +691,7 @@ export async function createCompletionStream(
           }
         })
         .catch((err) => {
+          stopKeepalive();
           if (isAbortError(err) || controller.signal.aborted) {
             logger.info("[Stream] 客户端已断开，文生图任务已取消");
             return;
@@ -789,25 +699,7 @@ export async function createCompletionStream(
 
           // 检查流是否仍然可写
           if (!stream.destroyed && stream.writable) {
-            stream.write(
-              "data: " +
-                JSON.stringify({
-                  id: util.uuid(),
-                  model: _model || model,
-                  object: "chat.completion.chunk",
-                  choices: [
-                    {
-                      index: 1,
-                      delta: {
-                        role: "assistant",
-                        content: `生成图片失败: ${err.message}`,
-                      },
-                      finish_reason: "stop",
-                    },
-                  ],
-                }) +
-                "\n\n"
-            );
+            writeStreamChunk(stream, _model || model, 1, { role: "assistant", content: `生成图片失败: ${err.message}` }, "stop");
             taskFinished = true;
             stream.end("data: [DONE]\n\n");
           } else {

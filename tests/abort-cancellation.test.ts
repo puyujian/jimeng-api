@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import test from "node:test";
 
 import { request } from "../src/api/controllers/core.ts";
@@ -81,4 +82,23 @@ test("createCompletionStream 在 signal 预先取消时不启动后台任务", a
       return true;
     },
   );
+});
+
+test("createCompletionStream 会立即写出首个 SSE chunk，避免首包超时", async () => {
+  const stream = await createCompletionStream(
+    [{ role: "user", content: "画一只猫" }],
+    "test-sessionid",
+    undefined,
+    {},
+    0,
+    async () => new Promise(() => {}),
+  );
+
+  const firstChunk = stream.read() ?? (await once(stream, "data"))[0];
+  const text = String(firstChunk);
+
+  assert.match(text, /"object":"chat\.completion\.chunk"/);
+  assert.match(text, /"role":"assistant"/);
+
+  stream.destroy();
 });
