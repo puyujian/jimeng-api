@@ -309,7 +309,11 @@ export async function request(
     region = REGION_CN;
   }
 
-  const origin = new URL(baseUrl).origin;
+  // 网站 Origin（用于 Origin/Referer 头）必须是用户侧域名，而非 API 域名
+  // 否则国际站的 shark 风控会因为 Origin 不匹配拒绝请求
+  const siteOrigin = (isUS || isHK || isJP || isSG)
+    ? "https://dreamina.capcut.com"
+    : new URL(baseUrl).origin;
 
   const fullUrl = `${baseUrl}${uri}`;
   const methodLabel = method.toUpperCase();
@@ -329,8 +333,10 @@ export async function request(
 
   const headers = {
     ...FAKE_HEADERS,
-    Origin: origin,
-    Referer: origin,
+    // 国际站 API 域名与网站域名不同，Sec-Fetch-Site 应为 same-site
+    ...(isUS || isHK || isJP || isSG ? { "Sec-Fetch-Site": "same-site" } : {}),
+    Origin: siteOrigin,
+    Referer: siteOrigin,
     "App-Sdk-Version": "48.0.0",
     Appid: aid,
     Cookie: generateCookie(tokenWithRegion),

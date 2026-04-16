@@ -60,7 +60,10 @@ export class JimengErrorHandler {
       
       case '4002':
         throw new APIException(EX.API_REQUEST_PARAMS_INVALID, `[参数错误]: ${errmsg}`);
-      
+
+      case '-6':
+        throw new APIException(EX.API_REQUEST_FAILED, `[shark风控拒绝]: 该账号未通过字节安全验证，需切换账号重试`);
+
       case '5001':
         throw new APIException(EX.API_IMAGE_GENERATION_FAILED, `[生成失败]: ${errmsg}`);
       

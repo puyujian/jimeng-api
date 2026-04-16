@@ -784,6 +784,17 @@ export default class AccountPoolService {
       };
     }
 
+    // shark 风控拒绝 (ret=-6): 账号被字节 shark 系统标记，拉黑后切换其他账号重试
+    if (/shark not pass/i.test(message) || /错误码: -6\)/.test(message)) {
+      return {
+        retryable: true,
+        blacklist: true,
+        status: "blacklisted" as AccountStatus,
+        reason: message || "shark 风控拒绝，账号被标记",
+        blacklistReleaseAt: nextShanghaiMidnightIso(),
+      };
+    }
+
     if (
       compare?.(API_EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS) ||
       /1006|121101/.test(message) ||

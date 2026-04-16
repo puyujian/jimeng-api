@@ -749,7 +749,7 @@ class DreaminaLoginProvider implements LoginProvider {
     const selectorPopup = this.#waitForPopup(browser, proxyAuth, 4000);
     await this.#clickVisibleSelectorsDeep(
       page,
-      [".login-button-MoeK5r", ".sign-up-btn", "#SiderMenuLogin"],
+      ["[class*='login-button']", ".login-button-MoeK5r", ".sign-up-btn", "#SiderMenuLogin"],
       5000
     );
     popup = await selectorPopup;
